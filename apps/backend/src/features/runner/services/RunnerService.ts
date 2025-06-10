@@ -1,0 +1,50 @@
+import { Role, User } from "@prisma/client";
+import Service from "../../../common/services/Service";
+import { UserMapper } from "../../user/mappers/UserMapper";
+import { UserInterface } from "../../user/types";
+import { injectable } from "tsyringe";
+
+export interface IRunnerService {
+    all(): Promise<UserInterface[]>;
+    find(id: number): Promise<UserInterface>;
+    manager(id: number): Promise<UserInterface[]>;
+}
+
+@injectable()
+export class RunnerService extends Service implements IRunnerService {
+
+    public find = async (id: number): Promise<UserInterface> => {
+        const runner = await this.db.user.findUnique({
+            where: {
+                id: id,
+                role: Role.RUNNER
+            }
+        });
+        return UserMapper.format(runner);
+    }
+
+    public all = async (): Promise<UserInterface[]> => {
+        const users = await this.db.user.findMany({
+            where: {
+                role: Role.RUNNER
+            }
+        }); 
+        return users.map(user => UserMapper.format(user));
+    }
+
+    public manager = async (id: number): Promise<UserInterface[]> => {
+        const users = await this.db.user.findMany({
+            where: {
+                role: Role.RUNNER,
+                manager: {
+                    some: {
+                        managerID: id
+                    }
+                }   
+            }
+        });
+        return users.map(user => UserMapper.format(user));
+    }
+}
+
+RunnerService.register()
