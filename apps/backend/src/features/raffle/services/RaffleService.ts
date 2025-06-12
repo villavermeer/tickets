@@ -19,9 +19,7 @@ class RaffleService extends Service implements IRaffleService {
 
     constructor(
         @inject('Database') protected db: ExtendedPrismaClient
-    ) {
-        super()
-    }
+    ) { super() }
 
     public async find(id: number) {
         const raffle = await this.db.raffle.findUnique({
@@ -40,19 +38,42 @@ class RaffleService extends Service implements IRaffleService {
         const today = new Date();
         today.setUTCHours(0, 0, 0, 0);
 
+        console.log(data);
+    
         for (const raffle of data) {
-            if(!raffle.raffleID) continue;
-
-            const savedRaffle = await this.db.raffle.upsert({
+            // Check for existing raffle for today and gameID
+            const existingRaffle = await this.db.raffle.findFirst({
                 where: {
-                    id: raffle.raffleID
-                },
-                create: {
-                    gameID: raffle.gameID
-                },
-                update: {}
+                    gameID: raffle.gameID,
+                    created: {
+                        gte: today,
+                        lt: new Date(today.getTime() + 24 * 60 * 60 * 1000)
+                    }
+                }
             });
-
+    
+            let savedRaffle;
+    
+            if (existingRaffle) {
+                // Raffle exists, update codes by first deleting existing ones
+                await this.db.code.deleteMany({
+                    where: {
+                        raffleID: existingRaffle.id
+                    }
+                });
+    
+                savedRaffle = existingRaffle;
+            } else {
+                // Create new raffle
+                savedRaffle = await this.db.raffle.create({
+                    data: {
+                        gameID: raffle.gameID,
+                        created: today
+                    }
+                });
+            }
+    
+            // Create codes for the raffle
             await this.db.code.createMany({
                 data: raffle.codes.map(code => ({
                     value: 0,

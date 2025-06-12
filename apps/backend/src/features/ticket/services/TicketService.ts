@@ -15,7 +15,7 @@ import { Context } from "../../../common/utils/context";
 
 export interface ITicketService {
     all(start: string, end: string, managerID?: string, runnerID?: string): Promise<TicketInterface[]>;
-    runner(runnerID: number): Promise<TicketInterface[]>;
+    runner(runnerID: number, date?: Date): Promise<TicketInterface[]>;
     manager(managerID: number): Promise<TicketInterface[]>;
     raffle(raffleID: number, start?: string, end?: string): Promise<TicketInterface[]>;
     create(data: CreateTicketRequest): Promise<Ticket | null>;
@@ -137,11 +137,25 @@ export class TicketService extends Service implements ITicketService {
         return ticket;
     }
 
-    public runner = async (runnerID: number): Promise<TicketInterface[]> => {
+    public runner = async (runnerID: number, date?: Date): Promise<TicketInterface[]> => {
+
+        if (!date) {
+            date = new Date();
+        }
+
+        const startOfDay = new Date(date.getTime());
+        startOfDay.setHours(0, 0, 0, 0);
+        const endOfDay = new Date(date.getTime());
+        endOfDay.setHours(23, 59, 59, 999);
+
         const tickets = await this.db.ticket.findMany({
             select: TicketMapper.getSelectableFields(),
             where: {
-                creatorID: runnerID
+                creatorID: runnerID,
+                created: {
+                    gte: startOfDay,
+                    lte: endOfDay
+                }
             },
             orderBy: {
                 created: 'desc'

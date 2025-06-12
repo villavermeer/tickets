@@ -4,6 +4,7 @@ import cors from 'cors';
 import path from 'path';
 import { autoRegisterServices, container } from './common/utils/tsyringe';
 import MainRouter, { IMainRouter } from './common/routes/MainRouter';
+import Cachable from './common/classes/cache/Cachable';
 
 require('dotenv').config()
 
@@ -77,6 +78,10 @@ async function initialize() {
     app.use(express.static(path.join(__dirname, "public")));
     app.use(express.json())
     app.use(express.urlencoded({ extended: true }));
+
+    await Cachable.deleteMany([
+        "users:*",
+    ]);
 
     const mainRouter = container.resolve<IMainRouter>("MainRouter");
     app.use("/", mainRouter.getRouter());

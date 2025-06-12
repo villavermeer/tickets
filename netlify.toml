@@ -1,0 +1,7 @@
+[build]
+  base = "apps/website"
+  publish = ".next"
+  command = "turbo run build --filter=website"
+
+[[plugins]]
+  package = "@netlify/plugin-nextjs"

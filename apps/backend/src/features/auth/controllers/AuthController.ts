@@ -15,12 +15,17 @@ class AuthController extends Controller implements IAuthController {
 
 	public authorize = async (req: Request<any, any, AuthorizeRequest>, res: Response, next: NextFunction): Promise<void> => {
 		try {
+			console.log('Authorizing')
+
 			const authService = container.resolve<IAuthService>("AuthService");
 
 			const { user, token } = await authService.authorize(req.body);
 
 			res.status(200).json(formatMutationResponse('Authorization successful', { user, token }))
 		} catch (error: any) {
+
+			console.log(JSON.stringify(error))
+
 			this.handleError(error, req, res);
 		}
 	}

@@ -51,7 +51,7 @@ export class RunnerController extends Controller implements IRunnerController {
     public tickets = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
         try {
             const ticketService = container.resolve<ITicketService>("TicketService");
-            const tickets = await ticketService.runner(Number(req.params.id));
+            const tickets = await ticketService.runner(Number(req.params.id), req.query.date ? new Date(req.query.date as string) : undefined);
 
             res.status(200).json(formatSuccessResponse('Tickets', tickets));
         } catch (error: any) {

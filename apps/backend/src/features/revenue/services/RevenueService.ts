@@ -8,7 +8,7 @@ export interface IRevenueService {
     getRevenueByDate(date: Date): Promise<RevenueResult>;
     getRevenueByTicket(ticketID: number): Promise<RevenueResult>;
     getRevenueByRaffle(ticketID: number): Promise<RevenueResult>;
-    getRevenueByRunner(runnerID: number): Promise<RevenueResult>;
+    getRevenueByRunner(runnerID: number, date?: Date): Promise<RevenueResult>;
 }
 
 export interface RevenueResult {
@@ -74,11 +74,21 @@ export class RevenueService extends Service implements IRevenueService {
         return this.calculateRevenueFromTickets(tickets);
     }
 
-    public getRevenueByRunner = async (runnerID: number): Promise<RevenueResult> => {
-        const tickets = await this.db.ticket.findMany({
+    public getRevenueByRunner = async (runnerID: number, date?: Date): Promise<RevenueResult> => {
+        let tickets = await this.db.ticket.findMany({
             where: { creatorID: runnerID },
             select: TicketMapper.getSelectableFields(),
         });
+
+        if (date) { 
+            const startOfDay = new Date(date.getTime());
+            startOfDay.setHours(0, 0, 0, 0);
+            const endOfDay = new Date(date.getTime());
+            endOfDay.setHours(23, 59, 59, 999);
+
+            tickets = tickets.filter(ticket => ticket.created >= startOfDay && ticket.created <= endOfDay);
+        }
+
         return this.calculateRevenueFromTickets(tickets, false);
     }
 

@@ -23,8 +23,6 @@ export class RevenueController extends Controller implements IRevenueController 
             const revenueService = container.resolve<IRevenueService>("RevenueService");
             const date = new Date(req.query.date as string);
 
-            console.log(date);
-
             const revenue = await revenueService.getRevenueByDate(date)
 
             res.status(200).json(formatSuccessResponse('Revenue', revenue));
@@ -36,7 +34,7 @@ export class RevenueController extends Controller implements IRevenueController 
     public getRevenueByRunner = async (req: Request, res: Response): Promise<void> => {
         try {
             const revenueService = container.resolve<IRevenueService>("RevenueService");
-            const revenue = await revenueService.getRevenueByRunner(Number(req.params.id))
+            const revenue = await revenueService.getRevenueByRunner(Number(req.params.id), req.query.date ? new Date(req.query.date as string) : undefined)
 
             res.status(200).json(formatSuccessResponse('Revenue', revenue));
         } catch (error) {
