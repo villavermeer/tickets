@@ -38,8 +38,6 @@ class RaffleService extends Service implements IRaffleService {
         const today = new Date();
         today.setUTCHours(0, 0, 0, 0);
 
-        console.log(data);
-    
         for (const raffle of data) {
             // Check for existing raffle for today and gameID
             const existingRaffle = await this.db.raffle.findFirst({
@@ -68,7 +66,7 @@ class RaffleService extends Service implements IRaffleService {
                 savedRaffle = await this.db.raffle.create({
                     data: {
                         gameID: raffle.gameID,
-                        created: today
+                        created: new Date(today.getTime() - 24 * 60 * 60 * 1000)
                     }
                 });
             }
