@@ -24,6 +24,8 @@ export class UserRouter implements IUserRouter {
         const userController = container.resolve<IUserController>("UserController");
         
         this.router.get('/', userController.getCurrentUser);
+        this.router.put('/:id', userController.update); 
+        this.router.delete('/:id', userController.delete);
     }
 
     public static register(): void {

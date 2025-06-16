@@ -1,152 +1,152 @@
 generator client {
-    provider        = "prisma-client-js"
-    previewFeatures = ["fullTextSearchPostgres"]
+  provider        = "prisma-client-js"
+  previewFeatures = ["fullTextSearchPostgres"]
 }
 
 datasource db {
-    provider = "postgresql"
-    url      = env("DATABASE_URL")
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
 }
 
 model User {
-    id Int @id @default(autoincrement())
+  id Int @id @default(autoincrement())
 
-    password String
-    name     String
-    username String @unique
+  password String
+  name     String
+  username String @unique
 
-    role Role @default(CLIENT)
+  role Role @default(CLIENT)
 
-    tickets Ticket[]
+  tickets Ticket[]
 
-    runners ManagerRunner[] @relation("Manager")
-    manager ManagerRunner[] @relation("Runner")
+  runners ManagerRunner[] @relation("Manager")
+  manager ManagerRunner[] @relation("Runner")
 
-    created DateTime @default(now())
-    updated DateTime @updatedAt
+  created DateTime @default(now())
+  updated DateTime @updatedAt
 
-    commission Float @default(0.0)
+  commission Float @default(0.0)
 
-    @@index([id])
-    @@map("users")
+  @@index([id])
+  @@map("users")
 }
 
 model ManagerRunner {
-    id Int @id @default(autoincrement())
+  id Int @id @default(autoincrement())
 
-    managerID Int
-    manager   User @relation("Manager", fields: [managerID], references: [id])
+  managerID Int
+  manager   User @relation("Manager", fields: [managerID], references: [id], onDelete: Cascade)
 
-    runnerID Int
-    runner   User @relation("Runner", fields: [runnerID], references: [id])
+  runnerID Int
+  runner   User @relation("Runner", fields: [runnerID], references: [id], onDelete: Cascade)
 
-    created DateTime @default(now())
-    updated DateTime @updatedAt
+  created DateTime @default(now())
+  updated DateTime @updatedAt
 
-    @@index([id])
-    @@index([managerID])
-    @@index([runnerID])
-    @@map("manager_runners")
+  @@index([id])
+  @@index([managerID])
+  @@index([runnerID])
+  @@map("manager_runners")
 }
 
 enum Role {
-    ADMIN
-    CLIENT
-    RUNNER
-    MANAGER
+  ADMIN
+  CLIENT
+  RUNNER
+  MANAGER
 }
 
 model Ticket {
-    id Int @id @default(autoincrement())
+  id Int @id @default(autoincrement())
 
-    name String
+  name String
 
-    creatorID Int
-    creator   User @relation(fields: [creatorID], references: [id])
+  creatorID Int
+  creator   User @relation(fields: [creatorID], references: [id], onDelete: Cascade)
 
-    created DateTime @default(now())
-    updated DateTime @updatedAt
+  created DateTime @default(now())
+  updated DateTime @updatedAt
 
-    codes Code[]
-    games TicketGame[]
+  codes Code[]
+  games TicketGame[]
 
-    @@index([id])
-    @@index([creatorID])
-    @@map("tickets")
+  @@index([id])
+  @@index([creatorID])
+  @@map("tickets")
 }
 
 model Code {
-    id Int @id @default(autoincrement())
+  id Int @id @default(autoincrement())
 
-    code  Int
-    value Int
+  code  String
+  value Int
 
-    ticketID Int?
-    ticket   Ticket? @relation(fields: [ticketID], references: [id])
+  ticketID Int?
+  ticket   Ticket? @relation(fields: [ticketID], references: [id], onDelete: Cascade)
 
-    raffleID Int?
-    raffle   Raffle? @relation(fields: [raffleID], references: [id])
+  raffleID Int?
+  raffle   Raffle? @relation(fields: [raffleID], references: [id], onDelete: Cascade)
 
-    created DateTime @default(now())
-    updated DateTime @updatedAt
+  created DateTime @default(now())
+  updated DateTime @updatedAt
 
-    @@index([id])
-    @@index([ticketID])
-    @@index([raffleID])
-    @@map("codes")
+  @@index([id])
+  @@index([ticketID])
+  @@index([raffleID])
+  @@map("codes")
 }
 
 enum GameExpiry {
-    MIDDAY
-    MIDNIGHT
-    CUSTOM
+  MIDDAY
+  MIDNIGHT
+  CUSTOM
 }
 
 model Game {
-    id Int @id @default(autoincrement())
+  id Int @id @default(autoincrement())
 
-    name String
+  name String
 
-    expires GameExpiry @default(MIDDAY)
+  expires GameExpiry @default(MIDDAY)
 
-    raffles Raffle[]
-    tickets TicketGame[]
+  raffles Raffle[]
+  tickets TicketGame[]
 
-    created DateTime @default(now())
-    updated DateTime @updatedAt
+  created DateTime @default(now())
+  updated DateTime @updatedAt
 
-    @@index([id])
-    @@map("games")
+  @@index([id])
+  @@map("games")
 }
 
 model TicketGame {
-    id Int @id @default(autoincrement())
+  id Int @id @default(autoincrement())
 
-    ticketID Int
-    ticket   Ticket @relation(fields: [ticketID], references: [id])
+  ticketID Int
+  ticket   Ticket @relation(fields: [ticketID], references: [id], onDelete: Cascade)
 
-    gameID Int
-    game   Game @relation(fields: [gameID], references: [id])
+  gameID Int
+  game   Game @relation(fields: [gameID], references: [id], onDelete: Cascade)
 
-    created DateTime @default(now())
-    updated DateTime @updatedAt
+  created DateTime @default(now())
+  updated DateTime @updatedAt
 
-    @@index([id])
-    @@map("ticket_games")
+  @@index([id])
+  @@map("ticket_games")
 }
 
 model Raffle {
-    id Int @id @default(autoincrement())
+  id Int @id @default(autoincrement())
 
-    gameID Int
-    game   Game @relation(fields: [gameID], references: [id])
+  gameID Int
+  game   Game @relation(fields: [gameID], references: [id], onDelete: Cascade)
 
-    codes   Code[]
+  codes   Code[]
 
-    created DateTime @default(now())
-    updated DateTime @updatedAt
+  created DateTime @default(now())
+  updated DateTime @updatedAt
 
-    @@index([id])
-    @@index([gameID])
-    @@map("raffles")
+  @@index([id])
+  @@index([gameID])
+  @@map("raffles")
 }

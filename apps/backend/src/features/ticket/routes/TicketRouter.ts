@@ -32,6 +32,7 @@ class TicketRouter implements ITicketRouter {
         this.router.post('/', ticketController.create);
         this.router.post('/export', ticketController.export);
         this.router.put('/:id', ticketController.update);
+        this.router.delete('/:id', ticketController.delete);
     }
 }
 

@@ -3,6 +3,7 @@ import Service from "../../../common/services/Service";
 import { ExtendedPrismaClient } from "../../../common/utils/prisma";
 import { TicketMapper } from "../../ticket/mappers/TicketMapper";
 import { Context } from "../../../common/utils/context";
+import { Role } from "@prisma/client";
 
 export interface IRevenueService {
     getRevenueByDate(date: Date): Promise<RevenueResult>;
@@ -31,6 +32,9 @@ export class RevenueService extends Service implements IRevenueService {
         const endOfDay = new Date(date.getTime());
         endOfDay.setHours(23, 59, 59, 999);
 
+
+        const requestUser = Context.get('user');
+
         const tickets = await this.db.ticket.findMany({
             where: {
                 created: {
@@ -40,6 +44,29 @@ export class RevenueService extends Service implements IRevenueService {
             },
             select: TicketMapper.getSelectableFields(),
         });
+
+        console.log(tickets)
+
+        if (requestUser?.role === Role.RUNNER) {
+            return this.calculateRevenueFromTickets(tickets.filter(ticket => ticket.creator.id === requestUser.id));
+        }
+
+        if (requestUser?.role === Role.MANAGER) {
+            const runnersUnderManager = await this.db.managerRunner.findMany({
+                where: {
+                    managerID: requestUser.id
+                },
+                select: {
+                    runnerID: true
+                }
+            });
+
+            const runnerIDs = runnersUnderManager.map(runner => runner.runnerID);
+
+            return this.calculateRevenueFromTickets(tickets.filter(ticket => 
+                ticket.creator.id === requestUser.id || runnerIDs.includes(ticket.creator.id)
+            ));
+        }
 
         return this.calculateRevenueFromTickets(tickets);
     }

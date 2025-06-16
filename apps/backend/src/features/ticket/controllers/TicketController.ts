@@ -10,6 +10,7 @@ export interface ITicketController {
     create(req: Request, res: Response, next: NextFunction): Promise<void>;
     update(req: Request, res: Response, next: NextFunction): Promise<void>;
     export(req: Request, res: Response, next: NextFunction): Promise<void>;
+    delete(req: Request, res: Response, next: NextFunction): Promise<void>;
 }
 
 @injectable()
@@ -64,6 +65,17 @@ export class TicketController extends Controller implements ITicketController {
             res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
             res.setHeader('Content-Disposition', 'attachment; filename=tickets.xlsx');
             res.send(buffer);
+        } catch (error: any) {
+            this.handleError(error, req, res);
+        }
+    }
+
+    public delete = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+        try {
+            const ticketService = container.resolve<ITicketService>("TicketService");
+            await ticketService.delete(Number(req.params.id));
+
+            res.status(200).json(formatMutationResponse('Ticket removed'));
         } catch (error: any) {
             this.handleError(error, req, res);
         }

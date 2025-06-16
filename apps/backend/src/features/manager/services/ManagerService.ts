@@ -26,6 +26,7 @@ export class ManagerService extends Service implements IManagerService {
 
     public find = async (id: number): Promise<UserInterface> => {
         const user = await this.db.user.findUnique({
+            select: UserMapper.getSelectableFields(),
             where: { id, role: Role.MANAGER }
         });
 

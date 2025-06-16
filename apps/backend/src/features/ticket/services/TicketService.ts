@@ -21,6 +21,7 @@ export interface ITicketService {
     create(data: CreateTicketRequest): Promise<Ticket | null>;
     update(id: number, data: UpdateTicketRequest): Promise<Ticket | null>;
     export(data: ExportTicketRequest): Promise<ExcelJS.Buffer>;
+    delete(id: number): Promise<void>;
 }
 
 @injectable()
@@ -100,8 +101,8 @@ export class TicketService extends Service implements ITicketService {
                 name: data.name,
                 creatorID: data.runnerID,
                 codes: {
-                    create: data.codes.map((code) => ({
-                        code: code.code,
+                    create: data.codes.map((code) => ({ 
+                        code: code.code.toString(),
                         value: parseInt(code.value.toString(), 10),
                     })),
                 },
@@ -129,7 +130,10 @@ export class TicketService extends Service implements ITicketService {
                 name: data.name,
                 codes: {
                     deleteMany: {},
-                    create: data.codes,
+                    create: data.codes.map((code) => ({
+                        code: code.code.toString(),
+                        value: parseInt(code.value.toString(), 10),
+                    })),
                 },
             },
         });
@@ -268,6 +272,36 @@ export class TicketService extends Service implements ITicketService {
         const buffer = await workbook.xlsx.writeBuffer();
 
         return buffer;
+    }
+
+    public delete = async (id: number): Promise<void> => {
+
+        // check if the user owns the ticket
+        const ticket = await this.db.ticket.findUnique({
+            where: { id }
+        });
+
+        if (!ticket) {
+            throw new ValidationError('Ticket not found');
+        }
+
+        if (ticket.creatorID !== Context.get('authID')) {
+            throw new ValidationError('You are not allowed to delete this ticket');
+        }
+
+        // delete all codes
+        await this.db.code.deleteMany({
+            where: { ticketID: id }
+        });
+
+        // delete all games
+        await this.db.ticketGame.deleteMany({
+            where: { ticketID: id }
+        });
+
+        await this.db.ticket.delete({
+            where: { id }
+        });
     }
 }
 

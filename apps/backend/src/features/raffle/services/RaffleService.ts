@@ -5,6 +5,7 @@ import {CreateRaffleRequest} from '../types/requests';
 import { RaffleInterface } from '@tickets/types/dist/raffle';
 import EntityNotFoundError from '../../../common/classes/errors/EntityNotFoundError';
 import { RaffleMapper } from '../mappers/RaffleMapper';
+import { CodeMapper } from '../../code/mappers/CodeMapper';
 
 export interface IRaffleService {
     save(data: Array<CreateRaffleRequest>): Promise<void>
@@ -43,10 +44,7 @@ class RaffleService extends Service implements IRaffleService {
             const existingRaffle = await this.db.raffle.findFirst({
                 where: {
                     gameID: raffle.gameID,
-                    created: {
-                        gte: today,
-                        lt: new Date(today.getTime() + 24 * 60 * 60 * 1000)
-                    }
+                    created: new Date(today.getTime() - 24 * 60 * 60 * 1000)
                 }
             });
     
@@ -76,7 +74,7 @@ class RaffleService extends Service implements IRaffleService {
                 data: raffle.codes.map(code => ({
                     value: 0,
                     raffleID: savedRaffle.id,
-                    code: code
+                    code: code.toString()
                 }))
             });
         }
@@ -91,16 +89,28 @@ class RaffleService extends Service implements IRaffleService {
     }
 
     public async today() {
+        const yesterday = new Date();
+        yesterday.setDate(yesterday.getDate() - 1);
+        yesterday.setHours(0, 0, 0, 0);
+
         const raffle = await this.db.raffle.findMany({
             select: RaffleMapper.getSelectableFields(),
             where: {
                 created: {
-                    gte: new Date(new Date().setHours(0, 0, 0, 0))
+                    gte: yesterday
                 }
             }
         });
 
-        return RaffleMapper.formatMany(raffle);
+        const codes = await this.db.code.findMany({
+            where: {
+                raffleID: {
+                    in: raffle.map(r => r.id)
+                }
+            }
+        });
+
+        return RaffleMapper.formatMany(raffle.map(r => ({...r, codes: codes.filter(c => c.raffleID === r.id)})));
     }
 
     public async date(date: Date) {

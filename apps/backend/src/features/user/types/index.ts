@@ -8,4 +8,14 @@ export interface UserInterface {
     commission: number;
     runners: UserInterface[] | null;
     manager: UserInterface | null;
+    password?: string;
+}
+
+export interface ManageUserRequest {
+    id?: number;
+    name: string;
+    username: string;
+    password: string;
+    commission: number;
+    role: $Enums.Role;
 }

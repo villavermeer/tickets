@@ -9,6 +9,7 @@ import jwt from "jsonwebtoken";
 import ValidationError from "../../../common/classes/errors/ValidationError"
 import { Role } from "@prisma/client"
 import { UserMapper } from "../../user/mappers/UserMapper"
+import { Context } from "../../../common/utils/context"
 
 export interface IAuthService {
 	authorize(data: AuthorizeRequest): Promise<{ user: UserInterface, token: string }>
@@ -48,7 +49,7 @@ class AuthService extends Service implements IAuthService {
 	}
 
 	public register = async (data: CreateUserRequest): Promise<void> => {
-		await this.db.user.create({
+		const createdUser = await this.db.user.create({
 			data: {
 				name: data.name,
 				username: data.username,
@@ -57,6 +58,17 @@ class AuthService extends Service implements IAuthService {
 				password: await bcrypt.hash(data.password, 10)
 			}
 		})
+
+		const requestingUser = Context.get('user');
+
+		if (requestingUser?.role === Role.MANAGER && data.role === Role.RUNNER) {
+			await this.db.managerRunner.create({
+				data: {
+					managerID: requestingUser.id,
+					runnerID: createdUser.id
+				}
+			})
+		}
 	}
 
 }

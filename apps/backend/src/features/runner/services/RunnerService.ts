@@ -3,6 +3,7 @@ import Service from "../../../common/services/Service";
 import { UserMapper } from "../../user/mappers/UserMapper";
 import { UserInterface } from "../../user/types";
 import { injectable } from "tsyringe";
+import { Context } from "../../../common/utils/context";
 
 export interface IRunnerService {
     all(): Promise<UserInterface[]>;
@@ -24,11 +25,32 @@ export class RunnerService extends Service implements IRunnerService {
     }
 
     public all = async (): Promise<UserInterface[]> => {
+
+        const requestingUser = Context.get('user');
+
+        if (requestingUser?.role === Role.MANAGER) {
+            const users = await this.db.user.findMany({
+                select: UserMapper.getSelectableFields(),
+                where: {
+                    role: Role.RUNNER,
+                    manager: {
+                        some: {
+                            managerID: requestingUser.id
+                        }
+                    }
+                }
+            }); 
+            
+            return users.map(user => UserMapper.format(user));
+        }
+
         const users = await this.db.user.findMany({
+            select: UserMapper.getSelectableFields(),
             where: {
                 role: Role.RUNNER
             }
         }); 
+
         return users.map(user => UserMapper.format(user));
     }
 

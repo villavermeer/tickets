@@ -1,4 +1,4 @@
-import {Prisma, User} from "@prisma/client";
+import {Prisma, Role, User} from "@prisma/client";
 import {UserInterface} from "../types";
 
 export type SelectableUserFields = Prisma.UserGetPayload<{
@@ -27,7 +27,7 @@ export class UserMapper {
             username: user.username ?? '',
             commission: user.commission ?? 0,
             runners: user.runners ? UserMapper.formatMany(user.runners) : [],
-            manager: user.manager ? UserMapper.format(user.manager) : null
+            manager: user.manager ? UserMapper.format(user.manager) : null,
         };
     }
 
