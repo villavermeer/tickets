@@ -31,6 +31,14 @@ export class TicketService extends Service implements ITicketService {
         const startDate = new Date(start);
         const endDate = new Date(end);
 
+        // Set startDate to beginning of the day (00:00:00.000)
+        startDate.setUTCHours(0, 0, 0, 0);
+        // Set endDate to end of the day (23:59:59.999)
+        endDate.setUTCHours(23, 59, 59, 999);
+
+        console.log('startDate', startDate)
+        console.log('endDate', endDate)
+
         // Get the current user's details
         const user = Context.get("user");
 
