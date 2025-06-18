@@ -2,8 +2,10 @@ import { Role, User } from "@prisma/client";
 import Service from "../../../common/services/Service";
 import { UserMapper } from "../../user/mappers/UserMapper";
 import { UserInterface } from "../../user/types";
-import { injectable } from "tsyringe";
+import { injectable, container } from "tsyringe";
 import { Context } from "../../../common/utils/context";
+import { IRevenueService, RevenueService } from "../../revenue/services/RevenueService";
+import _ from "lodash";
 
 export interface IRunnerService {
     all(): Promise<UserInterface[]>;
@@ -25,6 +27,8 @@ export class RunnerService extends Service implements IRunnerService {
     }
 
     public all = async (): Promise<UserInterface[]> => {
+
+        const revenueService = container.resolve<IRevenueService>(RevenueService);
 
         const requestingUser = Context.get('user');
 
@@ -50,7 +54,7 @@ export class RunnerService extends Service implements IRunnerService {
                 role: Role.RUNNER
             }
         }); 
-
+        
         return users.map(user => UserMapper.format(user));
     }
 

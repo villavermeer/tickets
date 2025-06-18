@@ -19,7 +19,7 @@ export class CodeMapper {
     public static format(code: any): CodeInterface {
         return {
             id: code.id ?? 0,
-            code: code.code ?? 0,
+            code: code.code ?? '',
             value: code.value ?? 0
         };
     }

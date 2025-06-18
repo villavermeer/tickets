@@ -40,7 +40,10 @@ export class TicketMapper {
             created: ticket.created ?? new Date(),
             updated: ticket.updated ?? new Date(),
             games: ticket.games.map((game: any) => game.game),
-            codes: CodeMapper.formatMany(ticket.codes ?? []),
+            codes: ticket.codes.map((code: any) => ({
+                code: code.code,
+                value: code.value
+            })),
         };
     }
 

@@ -1,4 +1,5 @@
 import { $Enums } from "@prisma/client";
+import { RevenueResult } from "../../revenue/services/RevenueService";
 
 export interface UserInterface {
     id: number;

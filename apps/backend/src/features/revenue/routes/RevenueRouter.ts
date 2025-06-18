@@ -29,6 +29,7 @@ class RevenueRouter implements IRevenueRouter {
         this.router.get('/date', revenueController.getRevenueByDate);
         this.router.get('/ticket/:id', revenueController.getRevenueByTicket);
         this.router.get('/runner/:id', revenueController.getRevenueByRunner);
+        this.router.get('/manager/:id', revenueController.getRevenueByManager);
     }
 }
 

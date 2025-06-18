@@ -96,13 +96,16 @@ export class TicketService extends Service implements ITicketService {
     };
 
     public async create(data: CreateTicketRequest): Promise<Ticket | null> {
+
+        console.log(data.codes);
+
         const ticket = await this.db.ticket.create({
             data: {
                 name: data.name,
                 creatorID: data.runnerID,
                 codes: {
                     create: data.codes.map((code) => ({ 
-                        code: code.code.toString(),
+                        code: code.code,
                         value: parseInt(code.value.toString(), 10),
                     })),
                 },
@@ -261,7 +264,7 @@ export class TicketService extends Service implements ITicketService {
                         managerName,
                         game.name,
                         code.code,
-                        (code.value / 100).toFixed(2), // Convert cents to decimal currency
+                        (code.value / 100).toFixed(2).replace('.', ','), // Convert cents to decimal currency and replace dot with comma
                         ticket.created.toLocaleString('nl-NL', { timeZone: 'Europe/Amsterdam' })
                     ]);
                 }

@@ -9,6 +9,7 @@ export interface IRevenueController {
     getRevenueByTicket(req: Request, res: Response): Promise<void>;
     getRevenueByRaffle(req: Request, res: Response): Promise<void>;
     getRevenueByRunner(req: Request, res: Response): Promise<void>;
+    getRevenueByManager(req: Request, res: Response): Promise<void>;
 }
 
 @injectable()
@@ -24,6 +25,17 @@ export class RevenueController extends Controller implements IRevenueController 
             const date = new Date(req.query.date as string);
 
             const revenue = await revenueService.getRevenueByDate(date)
+
+            res.status(200).json(formatSuccessResponse('Revenue', revenue));
+        } catch (error) {
+            this.handleError(error, req, res);
+        }
+    }
+
+    public getRevenueByManager = async (req: Request, res: Response): Promise<void> => {
+        try {
+            const revenueService = container.resolve<IRevenueService>("RevenueService");
+            const revenue = await revenueService.getRevenueByManager(Number(req.params.id), req.query.date ? new Date(req.query.date as string) : undefined)
 
             res.status(200).json(formatSuccessResponse('Revenue', revenue));
         } catch (error) {

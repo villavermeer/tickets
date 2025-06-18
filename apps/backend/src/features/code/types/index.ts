@@ -2,6 +2,6 @@ import { TicketInterface } from "../../ticket/types";
 
 export interface CodeInterface {
     id: number
-    code: number;
+    code: string;
     value: number;
 }

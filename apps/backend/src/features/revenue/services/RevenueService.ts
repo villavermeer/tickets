@@ -3,13 +3,14 @@ import Service from "../../../common/services/Service";
 import { ExtendedPrismaClient } from "../../../common/utils/prisma";
 import { TicketMapper } from "../../ticket/mappers/TicketMapper";
 import { Context } from "../../../common/utils/context";
-import { Role } from "@prisma/client";
+import { Role, User, Ticket as PrismaTicket } from "@prisma/client";
 
 export interface IRevenueService {
     getRevenueByDate(date: Date): Promise<RevenueResult>;
     getRevenueByTicket(ticketID: number): Promise<RevenueResult>;
-    getRevenueByRaffle(ticketID: number): Promise<RevenueResult>;
+    getRevenueByRaffle(raffleID: number): Promise<RevenueResult>;
     getRevenueByRunner(runnerID: number, date?: Date): Promise<RevenueResult>;
+    getRevenueByManager(managerID: number, date?: Date): Promise<RevenueResult>;
 }
 
 export interface RevenueResult {
@@ -18,144 +19,184 @@ export interface RevenueResult {
     netIncome: number;
 }
 
+interface TicketCode {
+    value: number;
+}
+
+interface TicketWithRelations {
+    id: number;
+    created: Date;
+    creator: Pick<User, "id" | "commission">;
+    codes: TicketCode[];
+    games: { gameID: number }[];
+}
+
+interface ManagerRelation {
+    runnerID: number;
+    manager: Pick<User, "commission">;
+}
+
 @injectable()
 export class RevenueService extends Service implements IRevenueService {
-    constructor(
-        @inject("Database") protected db: ExtendedPrismaClient
-    ) {
+    constructor(@inject("Database") protected db: ExtendedPrismaClient) {
         super();
     }
 
-    public getRevenueByDate = async (date: Date): Promise<RevenueResult> => {
-        const startOfDay = new Date(date.getTime());
-        startOfDay.setHours(0, 0, 0, 0);
-        const endOfDay = new Date(date.getTime());
-        endOfDay.setHours(23, 59, 59, 999);
+    public async getRevenueByDate(date: Date): Promise<RevenueResult> {
+        const { startOfDay, endOfDay } = this.getDateRange(date);
+        const requestUser = Context.get("user");
 
-
-        const requestUser = Context.get('user');
-
-        const tickets = await this.db.ticket.findMany({
+        let tickets = await this.db.ticket.findMany({
             where: {
                 created: {
                     gte: startOfDay,
-                    lte: endOfDay,
-                },
+                    lte: endOfDay
+                }
             },
-            select: TicketMapper.getSelectableFields(),
-        });
-
-        console.log(tickets)
+            select: {
+                ...TicketMapper.getSelectableFields(),
+                games: { select: { gameID: true } }
+            },
+        }) as TicketWithRelations[];
 
         if (requestUser?.role === Role.RUNNER) {
-            return this.calculateRevenueFromTickets(tickets.filter(ticket => ticket.creator.id === requestUser.id));
+            return this.calculateRevenueFromTickets(
+                tickets.filter(t => t.creator.id === requestUser.id)
+            );
         }
 
         if (requestUser?.role === Role.MANAGER) {
-            const runnersUnderManager = await this.db.managerRunner.findMany({
-                where: {
-                    managerID: requestUser.id
-                },
-                select: {
-                    runnerID: true
-                }
-            });
-
-            const runnerIDs = runnersUnderManager.map(runner => runner.runnerID);
-
-            return this.calculateRevenueFromTickets(tickets.filter(ticket => 
-                ticket.creator.id === requestUser.id || runnerIDs.includes(ticket.creator.id)
-            ));
+            const runnerIDs = await this.getRunnersUnderManager(requestUser.id);
+            return this.calculateRevenueFromTickets(
+                tickets.filter(t => t.creator.id === requestUser.id || runnerIDs.includes(t.creator.id))
+            );
         }
 
         return this.calculateRevenueFromTickets(tickets);
     }
 
-    public getRevenueByTicket = async (ticketID: number): Promise<RevenueResult> => {
+    public async getRevenueByTicket(ticketID: number): Promise<RevenueResult> {
         const ticket = await this.db.ticket.findUnique({
             where: { id: ticketID },
-            select: TicketMapper.getSelectableFields(),
-        });
+            select: {
+                ...TicketMapper.getSelectableFields(),
+                games: { select: { gameID: true } }
+            },
+        }) as TicketWithRelations | null;
 
-        return ticket ? this.calculateRevenueFromTickets([ticket]) : { grossIncome: 0, totalCommission: 0, netIncome: 0 };
+        if (!ticket) {
+            return { grossIncome: 0, totalCommission: 0, netIncome: 0 };
+        }
+
+        return this.calculateRevenueFromTickets([ticket]);
     }
 
-    public getRevenueByRaffle = async (raffleID: number): Promise<RevenueResult> => {
+    public async getRevenueByRaffle(raffleID: number): Promise<RevenueResult> {
         const tickets = await this.db.ticket.findMany({
             where: {
-                games: {
-                    some: {
-                        game: {
-                            raffles: {
-                                some: {
-                                    id: raffleID
-                                }
-                            }
-                        }
-                    }
-                }
+                games: { some: { game: { raffles: { some: { id: raffleID } } } } },
             },
-            select: TicketMapper.getSelectableFields(),
-        });
-    
+            select: {
+                ...TicketMapper.getSelectableFields(),
+                games: { select: { gameID: true } }
+            },
+        }) as TicketWithRelations[];
+
         return this.calculateRevenueFromTickets(tickets);
     }
 
-    public getRevenueByRunner = async (runnerID: number, date?: Date): Promise<RevenueResult> => {
+    public async getRevenueByRunner(runnerID: number, date?: Date): Promise<RevenueResult> {
         let tickets = await this.db.ticket.findMany({
             where: { creatorID: runnerID },
-            select: TicketMapper.getSelectableFields(),
-        });
+            select: {
+                ...TicketMapper.getSelectableFields(),
+                games: { select: { gameID: true } }
+            },
+        }) as TicketWithRelations[];
 
-        if (date) { 
-            const startOfDay = new Date(date.getTime());
-            startOfDay.setHours(0, 0, 0, 0);
-            const endOfDay = new Date(date.getTime());
-            endOfDay.setHours(23, 59, 59, 999);
-
-            tickets = tickets.filter(ticket => ticket.created >= startOfDay && ticket.created <= endOfDay);
+        if (date) {
+            const { startOfDay, endOfDay } = this.getDateRange(date);
+            tickets = tickets.filter(t => t.created >= startOfDay && t.created <= endOfDay);
         }
 
         return this.calculateRevenueFromTickets(tickets, false);
     }
 
-    private async calculateRevenueFromTickets(tickets: any[], includeManagerCommission: boolean = true): Promise<RevenueResult> {
-        if (tickets.length === 0) {
+    public async getRevenueByManager(managerID: number, date?: Date): Promise<RevenueResult> {
+        const { startOfDay, endOfDay } = date ? this.getDateRange(date) : { startOfDay: undefined, endOfDay: undefined };
+
+        const tickets = await this.db.ticket.findMany({
+            where: {
+                created: date ? { gte: startOfDay, lte: endOfDay } : undefined
+            },
+            select: {
+                ...TicketMapper.getSelectableFields(),
+                games: { select: { gameID: true } }
+            },
+        }) as TicketWithRelations[];
+
+        const filterIDs = await this.getRunnersUnderManager(managerID);
+        filterIDs.push(managerID);
+
+        const filtered = tickets.filter(t => filterIDs.includes(t.creator.id));
+
+        return this.calculateRevenueFromTickets(filtered);
+    }
+
+    private getDateRange(date: Date) {
+        const startOfDay = new Date(date);
+        startOfDay.setHours(0, 0, 0, 0);
+        const endOfDay = new Date(date);
+        endOfDay.setHours(23, 59, 59, 999);
+        return { startOfDay, endOfDay };
+    }
+
+    private async getRunnersUnderManager(managerID: number): Promise<number[]> {
+        const relations = await this.db.managerRunner.findMany({
+            where: { managerID },
+            select: { runnerID: true },
+        }) as ManagerRelation[];
+        return relations.map(r => r.runnerID);
+    }
+
+    private async calculateRevenueFromTickets(
+        tickets: TicketWithRelations[],
+        includeManagerCommission = true
+    ): Promise<RevenueResult> {
+        if (!tickets.length) {
             return { grossIncome: 0, totalCommission: 0, netIncome: 0 };
         }
 
-        const currentUser = Context.get('user');
+        const currentUser = Context.get("user");
+        const isAdminOrManager = [Role.ADMIN, Role.MANAGER].includes(currentUser.role);
 
-        const isAdminOrManager = currentUser.role === 'ADMIN' || currentUser.role === 'MANAGER';
+        const sums = await tickets.reduce(async (accP, t) => {
+            const acc = await accP;
+            const gameCount = t.games.length;
+            const value = t.codes.reduce((sum, c) => sum + (c.value * gameCount), 0);
+            let commission = (value * t.creator.commission) / 100;
 
-        const result = await tickets.reduce(
-            async (accPromise: Promise<{ grossIncome: number; totalCommission: number }>, ticket) => {
-                const acc = await accPromise;
-                const ticketValue = ticket.codes.reduce((sum: number, code: { value: number }) => sum + code.value, 0);
-                let commission = (ticketValue * ticket.creator.commission) / 100;
+            if (includeManagerCommission && isAdminOrManager) {
+                const mgrRel = await this.db.managerRunner.findFirst({
+                    where: { runnerID: t.creator.id },
+                    select: { manager: { select: { commission: true } } },
+                }) as ManagerRelation | null;
 
-                if (includeManagerCommission && isAdminOrManager) {
-                    const manager = await this.db.managerRunner.findFirst({
-                        where: { runnerID: ticket.runnerID },
-                        select: { manager: { select: { commission: true } } }
-                    });
-                    if (manager) {
-                        commission += (ticketValue * manager.manager.commission) / 100;
-                    }
+                if (mgrRel) {
+                    commission += (value * mgrRel.manager.commission) / 100;
                 }
+            }
 
-                return {
-                    grossIncome: acc.grossIncome + ticketValue,
-                    totalCommission: acc.totalCommission + commission,
-                };
-            },
-            Promise.resolve({ grossIncome: 0, totalCommission: 0 })
-        );
+            return {
+                grossIncome: acc.grossIncome + value,
+                totalCommission: acc.totalCommission + commission,
+            };
+        }, Promise.resolve({ grossIncome: 0, totalCommission: 0 }));
 
         return {
-            grossIncome: result.grossIncome,
-            totalCommission: result.totalCommission,
-            netIncome: result.grossIncome - result.totalCommission,
+            grossIncome: sums.grossIncome,
+            totalCommission: sums.totalCommission,
+            netIncome: sums.grossIncome - sums.totalCommission,
         };
     }
 }
