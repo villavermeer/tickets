@@ -55,22 +55,19 @@ class AuthService extends Service implements IAuthService {
 				username: data.username,
 				role: data.role as Role,
 				commission: Number(data.commission),
-				password: await bcrypt.hash(data.password, 10)
+				password: await bcrypt.hash(data.password, 10),
 			}
 		})
 
-		const requestingUser = Context.get('user');
-
-		if (requestingUser?.role === Role.MANAGER && data.role === Role.RUNNER) {
+		if (data.managerID) {
 			await this.db.managerRunner.create({
 				data: {
-					managerID: requestingUser.id,
+					managerID: data.managerID,
 					runnerID: createdUser.id
 				}
 			})
 		}
 	}
-
 }
 
 

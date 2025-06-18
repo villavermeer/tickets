@@ -8,6 +8,7 @@ export interface CreateUserRequest {
     username: string
     role: string
     commission: number
+    managerID: number | undefined
 }
 
 export interface AuthorizeRequest {
