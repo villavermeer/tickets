@@ -67,8 +67,6 @@ export class TicketService extends Service implements ITicketService {
             }
         }
 
-        console.log(JSON.stringify(whereClause, null, 2))
-
         // Fetch the tickets from the database
         const tickets = await this.db.ticket.findMany({
             select: TicketMapper.getSelectableFields(),
@@ -104,9 +102,6 @@ export class TicketService extends Service implements ITicketService {
     };
 
     public async create(data: CreateTicketRequest): Promise<Ticket | null> {
-
-        console.log(data.codes);
-
         const ticket = await this.db.ticket.create({
             data: {
                 name: data.name,
@@ -181,7 +176,6 @@ export class TicketService extends Service implements ITicketService {
     }
 
     public manager = async (managerID: number): Promise<TicketInterface[]> => {
-        console.log(`[TicketService] Fetching tickets for manager ID: ${managerID}`);
 
         // Step 1: Get runners managed by this manager
         const managerRunners = await this.db.managerRunner.findMany({
@@ -193,15 +187,12 @@ export class TicketService extends Service implements ITicketService {
             }
         });
 
-        console.log(`[TicketService] Found ${managerRunners.length} runners for manager`);
 
         // Step 2: Extract runner IDs
         const runnerIDs = managerRunners.map((mr) => mr.runnerID);
-        console.log(`[TicketService] Runner IDs: ${runnerIDs.join(', ')}`);
 
         // If there are no runners, return an empty array
         if (runnerIDs.length === 0) {
-            console.log('[TicketService] No runners found, returning empty array');
             return [];
         }
 
@@ -217,7 +208,6 @@ export class TicketService extends Service implements ITicketService {
                 created: 'desc'
             }
         });
-        console.log(`[TicketService] Found ${tickets.length} tickets for runners`);
 
         return tickets.map(TicketMapper.format);
     }
@@ -258,11 +248,8 @@ export class TicketService extends Service implements ITicketService {
                 }
             }
 
-            console.log('ticket :', JSON.stringify(ticket, null, 2));
 
             for (let game of ticket.games) {
-                console.log('game :', JSON.stringify(game, null, 2));
-
                 for (let code of ticket.codes) {
                     worksheet.addRow([
                         ticket.created.toLocaleString('nl-NL', { timeZone: 'Europe/Amsterdam' }),
