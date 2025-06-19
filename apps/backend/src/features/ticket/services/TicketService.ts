@@ -50,6 +50,13 @@ export class TicketService extends Service implements ITicketService {
             created: {
                 gte: startDate,
                 lte: endDate
+            },
+            codes: {
+                some: {
+                    ticketID: {
+                        not: null
+                    }
+                }
             }
         };
 
