@@ -66,9 +66,6 @@ export class TicketController extends Controller implements ITicketController {
             res.setHeader('Content-Disposition', 'attachment; filename=tickets.xlsx');
             res.send(buffer);
         } catch (error: any) {
-
-            console.log(JSON.stringify(error, null, 2))
-
             this.handleError(error, req, res);
         }
     }

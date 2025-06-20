@@ -32,9 +32,6 @@ export class RaffleController extends Controller implements IRaffleController {
 
     public save = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
         try {
-
-            console.log(req.body);
-
             container
                 .resolve<IRaffleService>("RaffleService")
                 .save(req.body);

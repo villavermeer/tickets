@@ -10,7 +10,7 @@ export interface IRevenueService {
     getRevenueByTicket(ticketID: number): Promise<RevenueResult>;
     getRevenueByRaffle(raffleID: number): Promise<RevenueResult>;
     getRevenueByRunner(runnerID: number, date?: Date): Promise<RevenueResult>;
-    getRevenueByManager(managerID: number, date?: Date): Promise<RevenueResult>;
+    getRevenueByManager(managerID: number, date?: Date, includeRunners?: boolean): Promise<RevenueResult>;
 }
 
 export interface RevenueResult {
@@ -122,7 +122,7 @@ export class RevenueService extends Service implements IRevenueService {
         return this.calculateRevenueFromTickets(tickets, false);
     }
 
-    public async getRevenueByManager(managerID: number, date?: Date): Promise<RevenueResult> {
+    public async getRevenueByManager(managerID: number, date?: Date, includeRunners?: boolean): Promise<RevenueResult> {
         const { startOfDay, endOfDay } = date ? this.getDateRange(date) : { startOfDay: undefined, endOfDay: undefined };
 
         const tickets = await this.db.ticket.findMany({
@@ -135,8 +135,7 @@ export class RevenueService extends Service implements IRevenueService {
             },
         }) as TicketWithRelations[];
 
-        const filterIDs = await this.getRunnersUnderManager(managerID);
-        filterIDs.push(managerID);
+        const filterIDs = includeRunners ? await this.getRunnersUnderManager(managerID) : [managerID];
 
         const filtered = tickets.filter(t => filterIDs.includes(t.creator.id));
 
