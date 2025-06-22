@@ -132,7 +132,18 @@ export class TicketService extends Service implements ITicketService {
     }
 
     public update = async (id: number, data: UpdateTicketRequest): Promise<Ticket | null> => {
-        const ticket = await this.db.ticket.update({
+
+        // check if the ticket exists
+        const ticket = await this.db.ticket.findUnique({
+            where: { id }
+        });
+        
+        if (!ticket) {
+            throw new ValidationError('Ticket not found');
+        }
+
+        // update the ticket
+        const updatedTicket = await this.db.ticket.update({
             where: {
                 id
             },
@@ -148,7 +159,7 @@ export class TicketService extends Service implements ITicketService {
             },
         });
 
-        return ticket;
+        return updatedTicket;
     }
 
     public runner = async (runnerID: number, date?: Date): Promise<TicketInterface[]> => {
