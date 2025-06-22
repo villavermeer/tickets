@@ -217,7 +217,9 @@ export class TicketService extends Service implements ITicketService {
     }
 
     public export = async (data: ExportTicketRequest): Promise<ExcelJS.Buffer> => {
+        console.debug("Exporting tickets with data:", data);
         const tickets = await this.all(data.startDate, data.endDate);
+        console.debug(`Fetched ${tickets.length} tickets for export.`);
 
         const workbook = new ExcelJS.Workbook();
         const worksheet = workbook.addWorksheet('Tickets');
@@ -227,7 +229,34 @@ export class TicketService extends Service implements ITicketService {
             'Trekking', 'Nummer', 'Inleg', 'Tijd indienen ticket'
         ]);
 
-        for (let ticket of tickets) {
+        // Pre-fetch all manager names for runners to minimize database calls
+        const runnerIDs = tickets
+            .filter(ticket => ticket.creator.role === 'RUNNER')
+            .map(ticket => ticket.creator.id);
+
+        const runnerManagerMap = await this.db.managerRunner.findMany({
+            where: {
+                runnerID: { in: runnerIDs }
+            },
+            select: {
+                runnerID: true,
+                manager: {
+                    select: {
+                        name: true
+                    }
+                }
+            }
+        });
+
+        const managerNameMap = new Map<number, string>();
+        runnerManagerMap.forEach(rm => {
+            if (rm.manager) {
+                managerNameMap.set(rm.runnerID, rm.manager.name);
+            }
+        });
+
+        tickets.forEach(ticket => {
+            console.debug("Processing ticket:", ticket.id);
             let runnerName = '-';
             let managerName = '-';
 
@@ -235,26 +264,13 @@ export class TicketService extends Service implements ITicketService {
                 managerName = ticket.creator.name;
             } else if (ticket.creator.role === 'RUNNER') {
                 runnerName = ticket.creator.name;
-                const manager = await this.db.managerRunner.findFirst({
-                    where: {
-                        runnerID: ticket.creator.id
-                    },
-                    select: {
-                        manager: {
-                            select: {
-                                name: true
-                            }
-                        }
-                    }
-                });
-                if (manager) {
-                    managerName = manager.manager.name;
-                }
+                managerName = managerNameMap.get(ticket.creator.id) || '-';
             }
 
-
-            for (let game of ticket.games) {
-                for (let code of ticket.codes) {
+            ticket.games.forEach(game => {
+                console.debug("Processing game:", game.name);
+                ticket.codes.forEach(code => {
+                    console.debug("Adding row for code:", code.code);
                     worksheet.addRow([
                         ticket.created.toLocaleString('nl-NL', { timeZone: 'Europe/Amsterdam' }),
                         v4(),
@@ -266,12 +282,13 @@ export class TicketService extends Service implements ITicketService {
                         (code.value / 100).toFixed(2).replace('.', ','), // Convert cents to decimal currency and replace dot with comma
                         ticket.created.toLocaleString('nl-NL', { timeZone: 'Europe/Amsterdam' })
                     ]);
-                }
-            }
-        }
+                });
+            });
+        });
 
         // Generate buffer
         const buffer = await workbook.xlsx.writeBuffer();
+        console.debug("Export buffer generated successfully.");
 
         return buffer;
     }
