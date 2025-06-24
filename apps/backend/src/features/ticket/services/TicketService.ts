@@ -142,13 +142,21 @@ export class TicketService extends Service implements ITicketService {
             throw new ValidationError('Ticket not found');
         }
 
-        // update the ticket
+        console.log(data)
+
+        // // update the ticket
         const updatedTicket = await this.db.ticket.update({
             where: {
                 id
             },
             data: {
                 name: data.name,
+                games: {
+                    deleteMany: {},
+                    create: data.games.map((game) => ({
+                        gameID: game,
+                    })),
+                },
                 codes: {
                     deleteMany: {},
                     create: data.codes.map((code) => ({
@@ -159,7 +167,7 @@ export class TicketService extends Service implements ITicketService {
             },
         });
 
-        return updatedTicket;
+        return updatedTicket
     }
 
     public runner = async (runnerID: number, date?: Date): Promise<TicketInterface[]> => {
