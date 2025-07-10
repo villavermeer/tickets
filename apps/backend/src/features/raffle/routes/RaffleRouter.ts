@@ -34,8 +34,11 @@ class RaffleRouter implements IRaffleRouter {
         this.router.get('/today', Authorized, HasRole(Role.ADMIN), raffleController.today);
         this.router.get('/date', Authorized, raffleController.date);
 
+        this.router.get('/winning-tickets', Authorized, raffleController.getWinningTicketsByDate)
+
         this.router.get('/:id/tickets', Authorized, HasRole(Role.ADMIN), raffleController.tickets)
         this.router.get('/:id', Authorized, HasRole(Role.ADMIN), raffleController.find)
+        
     }
 }
 

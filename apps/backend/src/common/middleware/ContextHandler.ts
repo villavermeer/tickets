@@ -18,8 +18,9 @@ const ContextHandler = (req: Request, res: Response, next: NextFunction) => {
         let authID = 0;
 
         if (token) {
+
             try {
-                const decoded = jwt.verify(token, process.env.TOKEN_SECRET as string);
+                const decoded = jwt.verify(token as any, process.env.TOKEN_SECRET as string);
 
                 if (typeof decoded === "string") {
                     authID = _.toNumber(decoded);

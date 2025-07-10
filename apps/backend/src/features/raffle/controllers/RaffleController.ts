@@ -13,6 +13,7 @@ export interface IRaffleController {
     today(req: Request, res: Response, next: NextFunction): Promise<void>;
     find(req: Request, res: Response, next: NextFunction): Promise<void>;
     date(req: Request, res: Response, next: NextFunction): Promise<void>;
+    getWinningTicketsByDate(req: Request, res: Response, next: NextFunction): Promise<void>;
 }
 
 @injectable()
@@ -87,6 +88,20 @@ export class RaffleController extends Controller implements IRaffleController {
                 .date(date);
 
             res.status(200).json(formatSuccessResponse('Raffles', raffles));
+        } catch (error: any) {
+            this.handleError(error, req, res);
+        }
+    }
+
+    public getWinningTicketsByDate = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+        try {
+            const date = new Date(req.query.date as string);
+
+            const tickets = await container
+                .resolve<IRaffleService>("RaffleService")
+                .getWinningTicketsByDate(date); 
+
+            res.status(200).json(formatSuccessResponse('Tickets', tickets));
         } catch (error: any) {
             this.handleError(error, req, res);
         }

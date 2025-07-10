@@ -3,7 +3,7 @@ import Service from "../../../common/services/Service";
 import { ExtendedPrismaClient } from "../../../common/utils/prisma";
 import { TicketMapper } from "../../ticket/mappers/TicketMapper";
 import { Context } from "../../../common/utils/context";
-import { Role, User, Ticket as PrismaTicket } from "@prisma/client";
+import { Role, User, Ticket as PrismaTicket, Raffle } from "@prisma/client";
 
 export interface IRevenueService {
     getRevenueByDate(date: Date): Promise<RevenueResult>;
@@ -102,6 +102,8 @@ export class RevenueService extends Service implements IRevenueService {
             },
         }) as TicketWithRelations[];
 
+        console.log(tickets);
+        
         return this.calculateRevenueFromTickets(tickets);
     }
 

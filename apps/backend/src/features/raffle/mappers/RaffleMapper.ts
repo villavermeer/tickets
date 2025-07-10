@@ -33,7 +33,23 @@ export class RaffleMapper {
         };
     }
 
-    public static async formatMany(raffles: Raffle[]): Promise<RaffleInterface[]> {
-        return Promise.all(raffles.map(raffle => this.format(raffle)));
+    public static async formatMany(raffles: any[]): Promise<RaffleInterface[]> {
+        const revenueService = container.resolve<IRevenueService>("RevenueService");
+
+        // for (const raffle of raffles) {
+        //     raffle.revenue = await revenueService.getRevenueByDate(raffle.created);
+        // }
+        
+        return raffles.map(raffle => ({
+            id: raffle.id,
+            game: GameMapper.format(raffle.game),
+            codes: raffle.codes ? raffle.codes.map(CodeMapper.format) : [],
+            created: raffle.created,
+            revenue: {
+                grossIncome: 0,
+                totalCommission: 0,
+                netIncome: 0
+            }
+        }));
     }
 }
