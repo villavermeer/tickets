@@ -12,6 +12,7 @@ import ExcelJS from "exceljs";
 import _ from "lodash";
 import { v4 } from "uuid";
 import { Context } from "../../../common/utils/context";
+import { DateTime } from "luxon";
 
 export interface ITicketService {
     all(start: string, end: string, managerID?: string, runnerID?: string): Promise<TicketInterface[]>;
@@ -23,6 +24,8 @@ export interface ITicketService {
     export(data: ExportTicketRequest): Promise<ExcelJS.Buffer>;
     delete(id: number): Promise<void>;
 }
+
+
 
 @injectable()
 export class TicketService extends Service implements ITicketService {
@@ -106,6 +109,33 @@ export class TicketService extends Service implements ITicketService {
     };
 
     public async create(data: CreateTicketRequest): Promise<Ticket | null> {
+        /* -------------------------------------------------------------
+        * Calculate the strictest cut-off for the selected games
+        * ------------------------------------------------------------ */
+        const nowNL = DateTime.now().setZone("Europe/Amsterdam");
+
+        // Load the game names that belong to the ticket
+        const games = await this.db.game.findMany({
+            where: { id: { in: data.games } },
+            select: { id: true, name: true },
+        });
+
+        if (games.length !== data.games.length) {
+            throw new ValidationError("Er is iets misgegaan bij het aanmaken van het ticket.");
+        }
+
+        // Compute the earliest cut-off among all chosen games
+        const earliestCutOff = games
+            .map((g) => this.getCutOffForGame(g.name, nowNL))
+            .reduce((earliest, cur) => (cur < earliest ? cur : earliest));
+
+        if (nowNL >= earliestCutOff) {
+            const list = games.map((g) => g.name).join(", ");
+            throw new ValidationError(
+                `Tickets voor ${list} moeten voor ${earliestCutOff.toFormat("HH:mm")} worden aangemaakt.`
+            );
+        }
+       
         const ticket = await this.db.ticket.create({
             data: {
                 name: data.name,
@@ -298,7 +328,7 @@ export class TicketService extends Service implements ITicketService {
                         managerName,
                         game.name,
                         code.code,
-                        (code.value / 100).toFixed(2).replace('.', ','), // Convert cents to decimal currency and replace dot with comma
+                        (code.value / 100).toFixed(2).replace('.', ','),
                         ticket.created.toLocaleString('nl-NL', { timeZone: 'Europe/Amsterdam' })
                     ]);
                 });
@@ -340,6 +370,26 @@ export class TicketService extends Service implements ITicketService {
         await this.db.ticket.delete({
             where: { id }
         });
+    }
+
+    private getCutOffForGame(gameName: string, now: DateTime): DateTime {
+        const weekday = now.weekday;           // 1 = Mon … 7 = Sun
+        const isSunday = weekday === 7;
+        const isNoonGame =
+            gameName === "Philipsburg noon" || gameName === "Smart noon";
+
+        // 17 : 00 every day for “noon” games
+        if (isNoonGame) {
+            return now.set({ hour: 17, minute: 0, second: 0, millisecond: 0 });
+        }
+
+        // 19 : 00 on Sunday for the “evening / regular” games
+        if (isSunday) {
+            return now.set({ hour: 19, minute: 0, second: 0, millisecond: 0 });
+        }
+
+        // 24 : 00 (00 : 00 next day) Mon-Sat for those games
+        return now.plus({ days: 1 }).startOf("day"); // next-day midnight
     }
 }
 
