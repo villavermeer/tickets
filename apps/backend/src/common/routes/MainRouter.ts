@@ -21,6 +21,7 @@ class MainRouter implements IMainRouter {
         { path: '/raffle', identifier: "RaffleRouter" },
         { path: '/user', identifier: "UserRouter" },
         { path: '/revenue', identifier: "RevenueRouter" },
+        { path: '/balance', identifier: "BalanceRouter" },
     ];
 
     constructor() {

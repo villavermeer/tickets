@@ -26,6 +26,7 @@ model User {
   updated DateTime @updatedAt
 
   commission Float @default(0.0)
+  balance    Balance?
 
   @@index([id])
   @@map("users")
@@ -88,8 +89,12 @@ model Code {
   raffleID Int?
   raffle   Raffle? @relation(fields: [raffleID], references: [id], onDelete: Cascade)
 
-  created DateTime @default(now())
-  updated DateTime @updatedAt
+  created    DateTime @default(now())
+  updated    DateTime @updatedAt
+  relayed  DateTime?
+
+  relayBatchID Int?
+  relayBatch   RelayBatch? @relation(fields: [relayBatchID], references: [id], onDelete: SetNull)
 
   @@index([id])
   @@index([ticketID])
@@ -150,4 +155,64 @@ model Raffle {
   @@index([id])
   @@index([gameID])
   @@map("raffles")
+}
+
+model RelayBatch {
+  id           Int      @id @default(autoincrement())
+
+  start        DateTime
+  end          DateTime
+
+  codes        Code[]
+
+  created      DateTime @default(now())
+  updated      DateTime @updatedAt
+
+  @@index([id])
+  @@map("relay_batches")
+}
+
+model Balance {
+  id Int @id @default(autoincrement())
+
+  userID Int @unique
+  user   User @relation(fields: [userID], references: [id], onDelete: Cascade)
+
+  balance Int @default(0)
+
+  actions BalanceAction[]
+
+  created DateTime @default(now())
+  updated DateTime @updatedAt
+
+  @@index([id])
+  @@index([userID])
+  @@map("balances")
+}
+
+enum BalanceActionType {
+  PAYOUT
+  CORRECTION
+  TICKET_SALE
+}
+
+model BalanceAction {
+  id Int @id @default(autoincrement())
+
+  balanceID Int
+  balance   Balance @relation(fields: [balanceID], references: [id], onDelete: Cascade)
+
+  type BalanceActionType
+  
+  amount Int
+  reference String?
+
+  created DateTime @default(now())
+  updated DateTime @updatedAt
+
+  @@index([id])
+  @@index([balanceID])
+  @@index([type])
+  @@index([created])
+  @@map("balance_actions")
 }

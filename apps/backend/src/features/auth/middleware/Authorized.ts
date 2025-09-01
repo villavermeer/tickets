@@ -5,8 +5,13 @@ import { formatErrorResponse } from  "../../../common/utils/responses"
 
 export const Authorized = async (req: Request<unknown, unknown, unknown, unknown>, res: Response, next: NextFunction) => {
     try {
-        const token = req.headers.authorization
+        let token = req.headers.authorization
         if (token == null) throw new UnauthorizedError()
+
+        // if the token contains "Bearer " remove it
+        if (token.startsWith("Bearer ")) {
+            token = token.slice(7);
+        }
 
         jwt.verify(token, process.env.TOKEN_SECRET as string, async (err: any, id: any) => {
             if (err) throw new UnauthorizedError()

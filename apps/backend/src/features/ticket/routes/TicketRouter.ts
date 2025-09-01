@@ -29,6 +29,7 @@ class TicketRouter implements ITicketRouter {
         const ticketController = container.resolve<ITicketController>("TicketController");
 
         this.router.get('/', ticketController.all);
+        this.router.get('/relayable', ticketController.getRelayableTickets);
         this.router.post('/', ticketController.create);
         this.router.post('/export', ticketController.export);
         this.router.put('/:id', ticketController.update);

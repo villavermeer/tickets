@@ -6,7 +6,8 @@
 		"test": "echo \"Error: no test specified\" && exit 1",
 		"build": "tsc",
 		"start": "node -r tsconfig-paths/register dist/index.js",
-		"dev": "npx nodemon"
+		"dev": "npx nodemon",
+		"fix-sequences": "node scripts/fix-sequences.js"
 	},
 	"author": "",
 	"license": "ISC",
@@ -22,8 +23,10 @@
 	"dependencies": {
 		"@prisma/client": "6.9.0",
 		"@prisma/extension-accelerate": "^2.0.0",
+		"@types/pdfkit": "^0.17.2",
 		"exceljs": "^4.4.0",
 		"luxon": "^3.7.1",
+		"pdfkit": "^0.17.1",
 		"tsconfig-paths": "^4.2.0",
 		"uuid": "^11.1.0"
 	}
