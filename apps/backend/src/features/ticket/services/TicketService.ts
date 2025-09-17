@@ -4,7 +4,7 @@ import { injectable } from "tsyringe";
 import { CreateTicketRequest } from "../types/requests";
 import ValidationError from "../../../common/classes/errors/ValidationError";
 import { TicketMapper } from "../mappers/TicketMapper";
-import { TicketInterface, UpdateTicketRequest, ExportTicketRequest, RelayableTicketOverview, ChunkedRelayableTicket } from "@tickets/types";
+import { TicketInterface, UpdateTicketRequest, ExportTicketRequest, RelayableTicketOverview, ChunkedRelayableTicket, RelayableTicketEntry } from "@tickets/types";
 import ExcelJS from "exceljs";
 import _ from "lodash";
 import { v4 } from "uuid";
@@ -526,7 +526,7 @@ export class TicketService extends Service implements ITicketService {
             };
 
             // Add table data (only code, value, and final value - no deduction)
-            chunk.entries.forEach(entry => {
+            chunk.entries.forEach((entry: RelayableTicketEntry) => {
                 worksheet.addRow([
                     entry.code,
                     (entry.value / 100).toFixed(2),
@@ -687,7 +687,7 @@ export class TicketService extends Service implements ITicketService {
                             };
                         });
                     } else {
-                        rows = chunk.entries.map(e => ({ label: e.code, value: e.value, deduction: e.deduction, final: e.final }));
+                        rows = chunk.entries.map((e: RelayableTicketEntry) => ({ label: e.code, value: e.value, deduction: e.deduction, final: e.final }));
                     }
 
                     ensureSpace(24);
@@ -820,7 +820,7 @@ export class TicketService extends Service implements ITicketService {
         type EntryAgg = { code: string; codeLength: number; final: number; valueSum: number; deductionSum: number; games: Set<string> };
         const byCodeFinal = new Map<string, Map<number, EntryAgg>>();
         results.forEach(chunk => {
-            chunk.entries.forEach(e => {
+            chunk.entries.forEach((e: RelayableTicketEntry) => {
                 const code = e.code;
                 const finalKey = e.final; // cents
                 let inner = byCodeFinal.get(code);
@@ -832,7 +832,7 @@ export class TicketService extends Service implements ITicketService {
                 }
                 agg.valueSum += e.value;
                 agg.deductionSum += e.deduction;
-                chunk.gameCombination.forEach(g => agg!.games.add(g));
+                chunk.gameCombination.forEach((g: string) => agg!.games.add(g));
             });
         });
 
