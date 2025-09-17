@@ -19,6 +19,7 @@ class MainRouter implements IMainRouter {
         { path: '/ticket', identifier: "TicketRouter" },
         { path: '/game', identifier: "GameRouter" },
         { path: '/raffle', identifier: "RaffleRouter" },
+        { path: '/prize', identifier: "PrizeRouter" },
         { path: '/user', identifier: "UserRouter" },
         { path: '/revenue', identifier: "RevenueRouter" },
         { path: '/balance', identifier: "BalanceRouter" },

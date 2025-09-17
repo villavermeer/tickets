@@ -20,9 +20,9 @@ export interface ITicketService {
     create(data: CreateTicketRequest): Promise<Ticket | null>;
     update(id: number, data: UpdateTicketRequest): Promise<Ticket | null>;
     export(data: ExportTicketRequest): Promise<ExcelJS.Buffer>;
-    getRelayableTickets(start: string, end: string, commit?: boolean): Promise<ChunkedRelayableTicket[]>;
-    exportRelayableTickets(start: string, end: string, commit?: boolean): Promise<ExcelJS.Buffer>;
-    exportRelayableTicketsPDF(start: string, end: string, commit?: boolean, compact?: boolean): Promise<Buffer>;
+    getRelayableTickets(start: string, end: string, commit?: boolean, combineAcrossGames?: boolean): Promise<ChunkedRelayableTicket[]>;
+    exportRelayableTickets(start: string, end: string, commit?: boolean, combineAcrossGames?: boolean): Promise<ExcelJS.Buffer>;
+    exportRelayableTicketsPDF(start: string, end: string, commit?: boolean, compact?: boolean, combineAcrossGames?: boolean): Promise<Buffer>;
     delete(id: number): Promise<void>;
 }
 
@@ -33,6 +33,7 @@ export class TicketService extends Service implements ITicketService {
         // Daily maximum per code number (total from all users)
         CODE_MAX_SUPER4: 500, // 5 euro total per code for super4
         CODE_MAX_DEFAULT: 1000, // 10 euro total per code for 4-number games
+        CODE_MAX_4_NUMBER: 1000, // 10 euro total per 4-number code (all games)
         
         // Daily maximum per user per code
         USER_SUPER4: 100, // 1 euro per user per code for super4
@@ -451,9 +452,9 @@ export class TicketService extends Service implements ITicketService {
         return buffer;
     }
 
-    public exportRelayableTickets = async (start: string, end: string, commit?: boolean): Promise<ExcelJS.Buffer> => {
+    public exportRelayableTickets = async (start: string, end: string, commit?: boolean, combineAcrossGames?: boolean): Promise<ExcelJS.Buffer> => {
         console.debug("Exporting relayable tickets with data:", { start, end, commit });
-        const relayableTickets = await this.getRelayableTickets(start, end, commit);
+        const relayableTickets = await this.getRelayableTickets(start, end, commit, combineAcrossGames);
         console.debug(`Fetched ${relayableTickets.length} relayable ticket combinations for export.`);
 
         const workbook = new ExcelJS.Workbook();
@@ -467,9 +468,12 @@ export class TicketService extends Service implements ITicketService {
 
         // Add deduction rules
         worksheet.addRow(['Deduction Rules:']);
-        worksheet.addRow(['• 4-digit: deduct €1.00 above €1.00 (€0.50 for Super 4)']);
-        worksheet.addRow(['• 3-digit: deduct €2.00 for €3.00–€6.99, €5.00 for €7.00+ (Super 4: €0.50 for €2.50+)']);
-        worksheet.addRow(['• 2-digit: deduct 50% for €25.00+ (not played for Super 4)']);
+        worksheet.addRow(['• Default: 4-digit needs ≥ €1.25 → deduct €1.00 (play remainder)']);
+        worksheet.addRow(['• Default: 3-digit €3.00–€6.99 → deduct €2.00; ≥ €7.00 → deduct €5.00']);
+        worksheet.addRow(['• Default: 2-digit needs ≥ €25.00 → deduct 50% (halve)']);
+        worksheet.addRow(['• Super 4: 4-digit needs ≥ €1.00 → deduct €0.50']);
+        worksheet.addRow(['• Super 4: 3-digit needs ≥ €2.50 → deduct €0.50']);
+        worksheet.addRow(['• Super 4: 2-digit is excluded']);
         worksheet.addRow([]); // Empty row for spacing
 
         // Style the report header
@@ -553,9 +557,9 @@ export class TicketService extends Service implements ITicketService {
         return buffer;
     }
 
-    public exportRelayableTicketsPDF = async (start: string, end: string, commit?: boolean, compact?: boolean): Promise<Buffer> => {
+    public exportRelayableTicketsPDF = async (start: string, end: string, commit?: boolean, compact?: boolean, combineAcrossGames?: boolean): Promise<Buffer> => {
         console.debug("Exporting relayable tickets to PDF with data:", { start, end, commit, compact });
-        const relayableTickets = await this.getRelayableTickets(start, end, commit);
+        const relayableTickets = await this.getRelayableTickets(start, end, commit, combineAcrossGames);
         console.debug(`Fetched ${relayableTickets.length} relayable ticket combinations for PDF export.`);
 
         return new Promise((resolve, reject) => {
@@ -588,9 +592,12 @@ export class TicketService extends Service implements ITicketService {
                     // Calculate height for deduction rules (they might wrap to multiple lines)
                     doc.font('Helvetica').fontSize(10);
                     const rules = [
-                        '• 4-digit: deduct €1.00 above €1.00 (€0.50 for Super 4)',
-                        '• 3-digit: deduct €2.00 for €3.00–€6.99, €5.00 for €7.00+ (Super 4: €0.50 for €2.50+)',
-                        '• 2-digit: deduct 50% for €25.00+ (not played for Super 4)'
+                        '• Default: 4-digit needs ≥ €1.25 → deduct €1.00 (play remainder)',
+                        '• Default: 3-digit €3.00–€6.99 → deduct €2.00; ≥ €7.00 → deduct €5.00',
+                        '• Default: 2-digit needs ≥ €25.00 → deduct 50% (halve)',
+                        '• Super 4: 4-digit needs ≥ €1.00 → deduct €0.50',
+                        '• Super 4: 3-digit needs ≥ €2.50 → deduct €0.50',
+                        '• Super 4: 2-digit is excluded'
                     ];
                     
                     let totalRulesHeight = 0;
@@ -735,6 +742,18 @@ export class TicketService extends Service implements ITicketService {
             throw new ValidationError('You are not allowed to delete this ticket');
         }
 
+        // check if the ticket was created today (same day editing only)
+        const today = new Date();
+        const ticketCreatedDate = new Date(ticket.created);
+        
+        // Set both dates to start of day for comparison
+        const todayStart = new Date(today.getFullYear(), today.getMonth(), today.getDate());
+        const ticketDateStart = new Date(ticketCreatedDate.getFullYear(), ticketCreatedDate.getMonth(), ticketCreatedDate.getDate());
+        
+        if (todayStart.getTime() !== ticketDateStart.getTime()) {
+            throw new ValidationError('Tickets kunnen alleen worden verwijderd op dezelfde dag als ze zijn aangemaakt');
+        }
+
         // delete all codes
         await this.db.code.deleteMany({
             where: { ticketID: id }
@@ -750,7 +769,7 @@ export class TicketService extends Service implements ITicketService {
         });
     }
 
-    public getRelayableTickets = async (start: string, end: string, commit?: boolean): Promise<ChunkedRelayableTicket[]> => {
+    public getRelayableTickets = async (start: string, end: string, commit?: boolean, combineAcrossGames?: boolean): Promise<ChunkedRelayableTicket[]> => {
         
         // if(Context.get('authID') !== 1) {
         //     throw new ValidationError('Je hebt geen toegang tot deze functionaliteit');
@@ -789,7 +808,195 @@ export class TicketService extends Service implements ITicketService {
             }
         });
 
-        return this.buildRelayableChunks(codes);
+        // For non-commit exports, we want incremental results that account for prior commits earlier the same day
+        const results = await this.buildRelayableChunksIncremental(codes, startDate, endDate);
+
+        if (!combineAcrossGames) {
+            return results;
+        }
+
+        // Combine across games by (code, per-game final). We sum value/deduction across games
+        // but keep the per-game final amount unchanged by grouping on it.
+        type EntryAgg = { code: string; codeLength: number; final: number; valueSum: number; deductionSum: number; games: Set<string> };
+        const byCodeFinal = new Map<string, Map<number, EntryAgg>>();
+        results.forEach(chunk => {
+            chunk.entries.forEach(e => {
+                const code = e.code;
+                const finalKey = e.final; // cents
+                let inner = byCodeFinal.get(code);
+                if (!inner) { inner = new Map<number, EntryAgg>(); byCodeFinal.set(code, inner); }
+                let agg = inner.get(finalKey);
+                if (!agg) {
+                    agg = { code, codeLength: e.codeLength, final: finalKey, valueSum: 0, deductionSum: 0, games: new Set<string>() };
+                    inner.set(finalKey, agg);
+                }
+                agg.valueSum += e.value;
+                agg.deductionSum += e.deduction;
+                chunk.gameCombination.forEach(g => agg!.games.add(g));
+            });
+        });
+
+        // Now group aggregated entries by their union-of-games signature
+        const groupsByGames = new Map<string, { gameList: string[]; entries: { code: string; codeLength: number; value: number; deduction: number; final: number }[] }>();
+        for (const inner of byCodeFinal.values()) {
+            for (const agg of inner.values()) {
+                const gameList = Array.from(agg.games).sort();
+                const gameKey = gameList.join(', ');
+                const group = groupsByGames.get(gameKey) || { gameList, entries: [] };
+                group.entries.push({
+                    code: agg.code,
+                    codeLength: agg.codeLength,
+                    value: agg.valueSum,
+                    deduction: agg.deductionSum,
+                    final: agg.final
+                });
+                groupsByGames.set(gameKey, group);
+            }
+        }
+
+        // Emit one chunk per game-list with multiple code rows
+        const combinedChunks: ChunkedRelayableTicket[] = Array.from(groupsByGames.values()).map(g => ({
+            gameCombination: g.gameList,
+            codes: g.entries.map(e => e.code),
+            totalValue: g.entries.reduce((s, x) => s + x.value, 0),
+            ticketCount: g.entries.length,
+            deduction: g.entries.reduce((s, x) => s + x.deduction, 0),
+            finalValue: g.entries.reduce((s, x) => s + x.final, 0),
+            entries: g.entries
+        }));
+
+        return _.sortBy(combinedChunks, c => c.gameCombination.join('|'));
+    }
+
+    // Build chunks but compute per-code incremental values for the selected window by
+    // subtracting already-committed amounts earlier in the same day.
+    private buildRelayableChunksIncremental = async (codes: any[], windowStart: Date, windowEnd: Date): Promise<ChunkedRelayableTicket[]> => {
+        type GroupValue = { gameIds: number[]; gameNames: string[]; entries: { code: string; codeLength: number; value: number; }[] };
+        type GroupKey = string;
+
+        const groups = new Map<GroupKey, GroupValue>();
+
+        codes.forEach((item) => {
+            const value = item.value as number;
+            const codeStr = String(item.code);
+            const codeLength = codeStr.length;
+            const gameIds: number[] = (item.ticket?.games || []).map((g: any) => g.game?.id).filter((id: any) => typeof id === 'number');
+            const gameNames: string[] = (item.ticket?.games || []).map((g: any) => g.game?.name).filter((n: any) => typeof n === 'string');
+
+            const hasSuper4 = gameIds.includes(7);
+
+            // Add entries per individual non-Super4 game (not as a combination)
+            const nonSuperGames = (item.ticket?.games || []).filter((g: any) => g.game?.id !== 7);
+            nonSuperGames.forEach((g: any) => {
+                const gId = g.game?.id;
+                const gName = g.game?.name;
+                if (typeof gId === 'number' && typeof gName === 'string') {
+                    const key: GroupKey = `G:${gId}:${gName}`;
+                    const existing: GroupValue = groups.get(key) || { gameIds: [gId], gameNames: [gName], entries: [] };
+                    existing.entries.push({ code: codeStr, codeLength, value });
+                    groups.set(key, existing);
+                }
+            });
+
+            // Add Super 4 group separately if present
+            if (hasSuper4) {
+                const key: GroupKey = 'S4:Super 4';
+                const existing: GroupValue = groups.get(key) || { gameIds: [7], gameNames: ['Super 4'], entries: [] };
+                existing.entries.push({ code: codeStr, codeLength, value });
+                groups.set(key, existing);
+            }
+        });
+
+        // Determine the day window from the start time (assumes exports are per-day; if multi-day, use the first day)
+        const dayStart = new Date(windowStart);
+        dayStart.setUTCHours(0, 0, 0, 0);
+        const dayEnd = new Date(windowStart);
+        dayEnd.setUTCHours(23, 59, 59, 999);
+
+        const chunks: ChunkedRelayableTicket[] = [];
+        for (const group of Array.from(groups.values())) {
+            const isSuper4 = group.gameIds.includes(7);
+            // Aggregate values for the window per code
+            const codeGroups = _.groupBy(group.entries, 'code');
+            const windowAggregated: { code: string; codeLength: number; value: number; }[] = [];
+            Object.entries(codeGroups).forEach(([code, entries]) => {
+                const totalValue = entries.reduce((sum, entry) => sum + entry.value, 0);
+                const codeLength = entries[0].codeLength;
+                windowAggregated.push({ code, codeLength, value: totalValue });
+            });
+
+            if (windowAggregated.length === 0) continue;
+
+            // Batch-fetch all codes for the day for this game context
+            const ticketGameFilter: any = isSuper4 ? { some: { gameID: 7 } } : { some: { gameID: group.gameIds[0] } };
+            const allDayForGame = await this.db.code.findMany({
+                where: {
+                    ticket: {
+                        created: { gte: dayStart, lte: dayEnd },
+                        games: ticketGameFilter
+                    }
+                },
+                select: { code: true, value: true, relayed: true }
+            });
+
+            // Build maps: total by code and committed by code
+            const totalByCode = new Map<string, number>();
+            const committedByCode = new Map<string, number>();
+            for (const c of allDayForGame) {
+                const k = String(c.code);
+                totalByCode.set(k, (totalByCode.get(k) || 0) + (c.value as number));
+                if (c.relayed) committedByCode.set(k, (committedByCode.get(k) || 0) + (c.value as number));
+            }
+
+            // For each window code, compute daily totals and incremental amounts
+            const entriesDetailed: { code: string; codeLength: number; value: number; deduction: number; final: number }[] = [];
+            for (const e of windowAggregated) {
+                const totalAllDay = totalByCode.get(e.code) || 0;
+                const committedValue = committedByCode.get(e.code) || 0;
+
+                // Apply threshold to full day sum
+                const valueInEuros = totalAllDay / 100;
+                let meetsThreshold = false;
+                if (isSuper4) {
+                    if (e.codeLength === 4) meetsThreshold = valueInEuros >= 1.00;
+                    else if (e.codeLength === 3) meetsThreshold = valueInEuros >= 2.50;
+                    else if (e.codeLength === 2) meetsThreshold = false;
+                } else {
+                    if (e.codeLength === 4) meetsThreshold = valueInEuros >= 1.25;
+                    else if (e.codeLength === 3) meetsThreshold = valueInEuros >= 3.00;
+                    else if (e.codeLength === 2) meetsThreshold = valueInEuros >= 25.00;
+                }
+                if (!meetsThreshold) continue;
+
+                const dayCalc = this.calculateDeduction(e.codeLength, totalAllDay, group.gameIds);
+                const committedCalc = committedValue > 0 ? this.calculateDeduction(e.codeLength, committedValue, group.gameIds) : { deduction: 0, finalValue: 0 };
+                const incrementalFinal = dayCalc.finalValue - committedCalc.finalValue;
+                if (incrementalFinal <= 0) continue;
+
+                const incrementalValue = e.value;
+                const incrementalDeduction = Math.max(0, incrementalValue - incrementalFinal);
+
+                entriesDetailed.push({ code: e.code, codeLength: e.codeLength, value: incrementalValue, deduction: incrementalDeduction, final: incrementalFinal });
+            }
+
+            if (!entriesDetailed.length) continue;
+
+            const totalValue = entriesDetailed.reduce((s, x) => s + x.value, 0);
+            const deduction = entriesDetailed.reduce((s, x) => s + x.deduction, 0);
+            const finalValue = entriesDetailed.reduce((s, x) => s + x.final, 0);
+
+            chunks.push({
+                gameCombination: group.gameNames,
+                codes: entriesDetailed.map(e => e.code),
+                totalValue,
+                ticketCount: entriesDetailed.length,
+                deduction,
+                finalValue,
+                entries: entriesDetailed
+            });
+        }
+
+        return _.sortBy(chunks, c => c.gameCombination.join('|'));
     }
 
     private parseDateParameter(dateParam: string, isStartDate: boolean): Date {
@@ -840,10 +1047,11 @@ export class TicketService extends Service implements ITicketService {
     private buildRelayableChunks = (codes: any[]): ChunkedRelayableTicket[] => {
         type GroupValue = { gameIds: number[]; gameNames: string[]; entries: { code: string; codeLength: number; value: number; }[] };
         type GroupKey = string;
+
         const groups = new Map<GroupKey, GroupValue>();
 
         codes.forEach((item) => {
-            const value = item.value as number; // in cents
+            const value = item.value as number;
             const codeStr = String(item.code);
             const codeLength = codeStr.length;
             const gameIds: number[] = (item.ticket?.games || []).map((g: any) => g.game?.id).filter((id: any) => typeof id === 'number');
@@ -885,64 +1093,42 @@ export class TicketService extends Service implements ITicketService {
                 aggregatedEntries.push({ code, codeLength, value: totalValue });
             });
 
-            // Calculate total value for all codes in this group
-            const totalGroupValue = aggregatedEntries.reduce((sum, entry) => sum + entry.value, 0);
-            const totalGroupValueInEuros = totalGroupValue / 100;
             const hasSuper4 = group.gameIds.includes(7);
 
-            // Apply threshold filtering based on total group value instead of individual codes
-            let shouldIncludeGroup = false;
-            
-            if (hasSuper4) {
-                // Super 4 threshold rules - check if any code length meets the threshold
-                const has4Digits = aggregatedEntries.some(entry => entry.codeLength === 4);
-                const has3Digits = aggregatedEntries.some(entry => entry.codeLength === 3);
-                
-                if (has4Digits && totalGroupValueInEuros >= 1.00) {
-                    shouldIncludeGroup = true; // 4 digits: from 1.00 euro
-                } else if (has3Digits && totalGroupValueInEuros >= 2.50) {
-                    shouldIncludeGroup = true; // 3 digits: from 2.50 euro
+            // Filter out codes that don't meet the minimum value requirements BEFORE further processing
+            const filteredEntries = aggregatedEntries.filter(entry => {
+                const valueInEuros = entry.value / 100;
+                if (hasSuper4) {
+                    // Super 4 thresholds
+                    if (entry.codeLength === 4) return valueInEuros >= 1.00;
+                    if (entry.codeLength === 3) return valueInEuros >= 2.50;
+                    if (entry.codeLength === 2) return false; // never played on Super4
+                } else {
+                    // Default game thresholds
+                    if (entry.codeLength === 4) return valueInEuros >= 1.25; // 1.25+ then deduct 1
+                    if (entry.codeLength === 3) return valueInEuros >= 3.00;  // 3-6.99 => -2, 7+ => -5
+                    if (entry.codeLength === 2) return valueInEuros >= 25.00; // 25+ => halve
                 }
-                // 2 digits: always excluded for Super 4
-            } else {
-                // Non-Super4 threshold rules - check if any code length meets the threshold
-                const has4Digits = aggregatedEntries.some(entry => entry.codeLength === 4);
-                const has3Digits = aggregatedEntries.some(entry => entry.codeLength === 3);
-                const has2Digits = aggregatedEntries.some(entry => entry.codeLength === 2);
-                
-                if (has4Digits && totalGroupValueInEuros >= 1.00) {
-                    shouldIncludeGroup = true; // 4 digits: from 1.00 euro
-                } else if (has3Digits && totalGroupValueInEuros >= 3.00) {
-                    shouldIncludeGroup = true; // 3 digits: from 3.00 euro
-                } else if (has2Digits && totalGroupValueInEuros >= 25.00) {
-                    shouldIncludeGroup = true; // 2 digits: from 25.00 euro
-                }
+                return false;
+            });
+
+            // If no codes meet the threshold requirements, skip this group entirely
+            if (filteredEntries.length === 0) {
+                return;
             }
 
-            if (!shouldIncludeGroup) {
-                return; // Skip this group if it doesn't meet the threshold
-            }
-
-            // Apply deduction to the total group value instead of individual codes
-            const { deduction, finalValue } = this.calculateDeductionForTotal(totalGroupValue, group.gameIds);
-            
-            // Create entries with proportional deductions and filter out codes with 0 or negative final values
-            const entriesDetailed = aggregatedEntries
+            // Calculate per-code deductions and final values
+            const entriesDetailed = filteredEntries
                 .map(e => {
-                    // Calculate proportional deduction for each code based on its share of the total
-                    const proportion = e.value / totalGroupValue;
-                    const proportionalDeduction = Math.round(deduction * proportion);
-                    const proportionalFinal = e.value - proportionalDeduction;
-                    
-                    return { 
-                        code: e.code, 
-                        codeLength: e.codeLength, 
-                        value: e.value, 
-                        deduction: proportionalDeduction, 
-                        final: proportionalFinal 
-                    };
+                    const { deduction, finalValue } = this.calculateDeduction(e.codeLength, e.value, group.gameIds);
+                    return { code: e.code, codeLength: e.codeLength, value: e.value, deduction, final: finalValue };
                 })
-                .filter(e => e.final > 0); // Only include codes with positive final values
+                .filter(e => e.final > 0);
+
+            // Aggregate totals from per-code results
+            const totalGroupValue = entriesDetailed.reduce((sum, e) => sum + e.value, 0);
+            const deduction = entriesDetailed.reduce((sum, e) => sum + e.deduction, 0);
+            const finalValue = entriesDetailed.reduce((sum, e) => sum + e.final, 0);
 
             chunks.push({
                 gameCombination: group.gameNames,
@@ -1084,21 +1270,13 @@ export class TicketService extends Service implements ITicketService {
 
                 let meetsThreshold = false;
                 if (isS4) {
-                    if (codeLength === 4) {
-                        meetsThreshold = valueInEuros >= 1.00;
-                    } else if (codeLength === 3) {
-                        meetsThreshold = valueInEuros >= 2.50;
-                    } else if (codeLength === 2) {
-                        meetsThreshold = false;
-                    }
+                    if (codeLength === 4) meetsThreshold = valueInEuros >= 1.00; // S4 4-digit
+                    else if (codeLength === 3) meetsThreshold = valueInEuros >= 2.50; // S4 3-digit
+                    else if (codeLength === 2) meetsThreshold = false; // S4 2-digit excluded
                 } else {
-                    if (codeLength === 4) {
-                        meetsThreshold = valueInEuros >= 1.00;
-                    } else if (codeLength === 3) {
-                        meetsThreshold = valueInEuros >= 3.00;
-                    } else if (codeLength === 2) {
-                        meetsThreshold = valueInEuros >= 25.00;
-                    }
+                    if (codeLength === 4) meetsThreshold = valueInEuros >= 1.25; // default 4-digit min 1.25
+                    else if (codeLength === 3) meetsThreshold = valueInEuros >= 3.00; // default 3-digit min 3
+                    else if (codeLength === 2) meetsThreshold = valueInEuros >= 25.00; // default 2-digit min 25
                 }
 
                 return meetsThreshold ? entries : [];
@@ -1142,6 +1320,7 @@ export class TicketService extends Service implements ITicketService {
         const isSuper4 = games.includes(7);
         const userDailyLimit = this.DAILY_LIMITS[isSuper4 ? 'USER_SUPER4' : 'USER_DEFAULT'];
         const codeDailyLimit = this.DAILY_LIMITS[isSuper4 ? 'CODE_MAX_SUPER4' : 'CODE_MAX_DEFAULT'];
+        const fourNumberCodeLimit = this.DAILY_LIMITS.CODE_MAX_4_NUMBER;
         
         // Get start and end of current day in Amsterdam timezone
         const startOfDay = nowNL.startOf('day').toJSDate();
@@ -1150,6 +1329,7 @@ export class TicketService extends Service implements ITicketService {
         // Track codes that exceed limits
         const userExceededCodes: string[] = [];
         const codeClosedCodes: string[] = [];
+        const fourNumberCodeClosed: string[] = [];
         
         for (const newCode of codes) {
             const codeString = newCode.code.toString();
@@ -1160,7 +1340,31 @@ export class TicketService extends Service implements ITicketService {
                 continue;
             }
             
-            // 1. Check total daily maximum for this code (from all users)
+            // 1. Check 4-number code daily maximum (10 euro total from all users across all games)
+            const totalPlayedFor4NumberCode = await this.db.code.findMany({
+                where: {
+                    code: codeString,
+                    ticket: {
+                        created: {
+                            gte: startOfDay,
+                            lte: endOfDay
+                        }
+                    }
+                },
+                select: {
+                    value: true
+                }
+            });
+            
+            const totalPlayed4Number = totalPlayedFor4NumberCode.reduce((acc, code) => acc + code.value, 0);
+            
+            // Check if adding this value would exceed the 4-number code's daily maximum (10 euro)
+            if (totalPlayed4Number + newCodeValue > fourNumberCodeLimit) {
+                fourNumberCodeClosed.push(codeString);
+                continue; // Skip other limit checks if 4-number code is already closed
+            }
+            
+            // 2. Check total daily maximum for this code (from all users) for specific game type
             const totalPlayedForCodeAllUsers = await this.db.code.findMany({
                 where: {
                     code: codeString,
@@ -1184,13 +1388,13 @@ export class TicketService extends Service implements ITicketService {
             
             const totalPlayedAllUsers = totalPlayedForCodeAllUsers.reduce((acc, code) => acc + code.value, 0);
             
-            // Check if adding this value would exceed the code's daily maximum
+            // Check if adding this value would exceed the code's daily maximum for this game type
             if (totalPlayedAllUsers + newCodeValue > codeDailyLimit) {
                 codeClosedCodes.push(codeString);
                 continue; // Skip user limit check if code is already closed
             }
             
-            // 2. Check user daily limit for this code
+            // 3. Check user daily limit for this code
             const userPlayedForCode = await this.db.code.findMany({
                 where: {
                     code: codeString,
@@ -1222,6 +1426,10 @@ export class TicketService extends Service implements ITicketService {
         }
 
         // Throw appropriate errors
+        if (fourNumberCodeClosed.length > 0) {
+            throw new ValidationError(`De volgende 4-cijferige nummers zijn gesloten (dagelijkse maximum van €10 bereikt): ${fourNumberCodeClosed.join(", ")}`);
+        }
+        
         if (codeClosedCodes.length > 0) {
             throw new ValidationError(`De volgende nummers zijn gesloten (dagelijkse maximum bereikt): ${codeClosedCodes.join(", ")}`);
         }
@@ -1233,5 +1441,4 @@ export class TicketService extends Service implements ITicketService {
     }
 }
 
-TicketService.register()
 TicketService.register()

@@ -15,11 +15,34 @@ export interface TicketInterface {
 export interface UpdateTicketRequest {
     id: number;
     name: string;
-    games: Array<number>;
-    codes: Array<{
-        code: number;
-        value: number;
-    }>;
+    games: number[];
+    codes: CodeInterface[];
+}
+
+export interface RelayableTicketOverview {
+    code: string;
+    games: string[];
+    gameIds: number[];
+    totalValue: number;
+    ticketCount: number;
+}
+
+export interface RelayableTicketEntry {
+    code: string;
+    codeLength: number;
+    value: number;
+    deduction: number;
+    final: number;
+}
+
+export interface ChunkedRelayableTicket {
+    gameCombination: string[];
+    codes: string[];
+    totalValue: number;
+    ticketCount: number;
+    deduction: number;
+    finalValue: number;
+    entries: RelayableTicketEntry[];
 }
 
 export interface ExportTicketRequest {

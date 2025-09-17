@@ -6,6 +6,7 @@ import { Context } from "../../../common/utils/context";
 import { Role } from "@prisma/client";
 import ValidationError from "../../../common/classes/errors/ValidationError";
 import { formatSuccessResponse } from "../../../common/utils/responses";
+import { ExtendedPrismaClient } from "../../../common/utils/prisma";
 
 export interface IBalanceController {
     getUserBalance(req: Request, res: Response): Promise<void>;
@@ -18,7 +19,10 @@ export interface IBalanceController {
 
 @injectable()
 export class BalanceController extends Controller implements IBalanceController {
-    constructor(@inject("BalanceService") private balanceService: IBalanceService) {
+    constructor(
+        @inject("BalanceService") private balanceService: IBalanceService,
+        @inject("Database") private db: ExtendedPrismaClient,
+    ) {
         super();
     }
 
@@ -191,9 +195,11 @@ export class BalanceController extends Controller implements IBalanceController 
     };
 
     private async isUserUnderManager(managerID: number, userID: number): Promise<boolean> {
-        // This would need to be implemented or injected from a service
-        // For now, we'll use a simple check
-        return true; // Placeholder - should be implemented properly
+        const relation = await this.db.managerRunner.findFirst({
+            where: { managerID, runnerID: userID },
+            select: { id: true }
+        });
+        return !!relation || managerID === userID; // allow manager to view own balance
     }
 }
 

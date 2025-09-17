@@ -39,6 +39,13 @@ export class BalanceRouter implements IBalanceRouter {
             balanceController.getBalanceActions
         );
         
+        // Get balance history (date range via query: startDate, endDate)
+        this.router.get(
+            "/:userID/history",
+            Authorized,
+            balanceController.getBalanceHistory
+        );
+        
         // Process payout (admins only)
         this.router.post(
             "/:userID/payout",

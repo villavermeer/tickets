@@ -19,6 +19,7 @@ export interface CreateBalanceActionRequest {
     type: BalanceActionType;
     amount: number;
     reference?: string;
+    created?: Date;
 }
 
 export interface BalanceWithActions {
@@ -47,8 +48,6 @@ export class BalanceService extends Service implements IBalanceService {
     }
 
     public async getUserBalance(userID: number): Promise<BalanceWithActions> {
-
-        console.log(':)')
         
         const balance = await this.db.balance.findUnique({
             where: { userID },
@@ -98,7 +97,8 @@ export class BalanceService extends Service implements IBalanceService {
                 balanceID: balance.id,
                 type: action.type,
                 amount: action.amount,
-                reference: action.reference
+                reference: action.reference,
+                created: action.created ? new Date(action.created) : undefined,
             }
         });
 
@@ -129,15 +129,30 @@ export class BalanceService extends Service implements IBalanceService {
     }
 
     public async processCorrection(userID: number, amount: number, reference?: string): Promise<BalanceAction> {
-        if (amount === 0) {
-            throw new ValidationError("Correction amount cannot be zero");
+        // Correction should set balance to this amount (absolute), not add/deduct
+        // Fetch current balance or create one
+        let balance = await this.db.balance.findUnique({ where: { userID } });
+        if (!balance) {
+            balance = await this.createInitialBalanceRecord(userID);
         }
 
-        return await this.addBalanceAction(userID, {
-            type: BalanceActionType.CORRECTION,
-            amount,
-            reference
+        const delta = amount - balance.balance; // set-to amount
+
+        const balanceAction = await this.db.balanceAction.create({
+            data: {
+                balanceID: balance.id,
+                type: BalanceActionType.CORRECTION,
+                amount: delta,
+                reference
+            }
         });
+
+        await this.db.balance.update({
+            where: { id: balance.id },
+            data: { balance: amount }
+        });
+
+        return this.formatBalanceAction(balanceAction);
     }
 
     public async getBalanceActions(userID: number, limit: number = 50, offset: number = 0): Promise<BalanceAction[]> {

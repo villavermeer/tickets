@@ -116,6 +116,8 @@ export class TicketController extends Controller implements ITicketController {
             const shouldExportPDF = pdfParam === 'true' || pdfParam === '1';
             const compactParam = (req.query.compact as string) || "false";
             const compact = compactParam === 'true' || compactParam === '1';
+            const combineParam = (req.query.combine as string) || "false";
+            const combineAcrossGames = combineParam === 'true' || combineParam === '1';
 
             if (shouldExportPDF) {
                 // Return PDF file
@@ -123,7 +125,8 @@ export class TicketController extends Controller implements ITicketController {
                     req.query.start as string, 
                     req.query.end as string,
                     commit,
-                    compact
+                    compact,
+                    combineAcrossGames
                 );
 
                 res.setHeader('Content-Type', 'application/pdf');
@@ -136,7 +139,8 @@ export class TicketController extends Controller implements ITicketController {
                     const buffer = await ticketService.exportRelayableTickets(
                         req.query.start as string, 
                         req.query.end as string,
-                        commit
+                        commit,
+                        combineAcrossGames
                     );
                     
                     console.log('Excel export completed, buffer size:', (buffer as any).length || 'unknown');
@@ -167,7 +171,8 @@ export class TicketController extends Controller implements ITicketController {
                 const relayableTickets = await ticketService.getRelayableTickets(
                     req.query.start as string, 
                     req.query.end as string,
-                    commit
+                    commit,
+                    combineAcrossGames
                 );
 
                 res.status(200).json(formatSuccessResponse('Results', relayableTickets));
