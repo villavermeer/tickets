@@ -1329,7 +1329,6 @@ export class TicketService extends Service implements ITicketService {
         // Track codes that exceed limits
         const userExceededCodes: string[] = [];
         const codeClosedCodes: string[] = [];
-        const fourNumberCodeClosed: string[] = [];
         
         for (const newCode of codes) {
             const codeString = newCode.code.toString();
@@ -1340,98 +1339,73 @@ export class TicketService extends Service implements ITicketService {
                 continue;
             }
             
-            // 1. Check 4-number code daily maximum (10 euro total from all users across all games)
-            const totalPlayedFor4NumberCode = await this.db.code.findMany({
-                where: {
-                    code: codeString,
-                    ticket: {
-                        created: {
-                            gte: startOfDay,
-                            lte: endOfDay
-                        }
-                    }
-                },
-                select: {
-                    value: true
-                }
-            });
-            
-            const totalPlayed4Number = totalPlayedFor4NumberCode.reduce((acc, code) => acc + code.value, 0);
-            
-            // Check if adding this value would exceed the 4-number code's daily maximum (10 euro)
-            if (totalPlayed4Number + newCodeValue > fourNumberCodeLimit) {
-                fourNumberCodeClosed.push(codeString);
-                continue; // Skip other limit checks if 4-number code is already closed
-            }
-            
-            // 2. Check total daily maximum for this code (from all users) for specific game type
-            const totalPlayedForCodeAllUsers = await this.db.code.findMany({
-                where: {
-                    code: codeString,
-                    ticket: {
-                        created: {
-                            gte: startOfDay,
-                            lte: endOfDay
-                        },
-                        // Only count codes from tickets that include the same game type
-                        games: {
-                            some: {
-                                gameID: isSuper4 ? 7 : { not: 7 }
+            // Check limits for each specific game this ticket is for
+            for (const gameID of games) {
+                // 1. Check 4-number code daily maximum (10 euro total from all users) for this specific game
+                const totalPlayedForCodeInGame = await this.db.code.findMany({
+                    where: {
+                        code: codeString,
+                        ticket: {
+                            created: {
+                                gte: startOfDay,
+                                lte: endOfDay
+                            },
+                            // Only count codes from tickets that include this specific game
+                            games: {
+                                some: {
+                                    gameID: gameID
+                                }
                             }
                         }
+                    },
+                    select: {
+                        value: true
                     }
-                },
-                select: {
-                    value: true
+                });
+                
+                const totalPlayedInGame = totalPlayedForCodeInGame.reduce((acc, code) => acc + code.value, 0);
+                
+                // Check if adding this value would exceed the 4-number code's daily maximum (10 euro) for this game
+                if (totalPlayedInGame + newCodeValue > fourNumberCodeLimit) {
+                    codeClosedCodes.push(`${codeString} (Game ID: ${gameID})`);
+                    continue; // Skip other limit checks if this game+code is already closed
                 }
-            });
-            
-            const totalPlayedAllUsers = totalPlayedForCodeAllUsers.reduce((acc, code) => acc + code.value, 0);
-            
-            // Check if adding this value would exceed the code's daily maximum for this game type
-            if (totalPlayedAllUsers + newCodeValue > codeDailyLimit) {
-                codeClosedCodes.push(codeString);
-                continue; // Skip user limit check if code is already closed
-            }
-            
-            // 3. Check user daily limit for this code
-            const userPlayedForCode = await this.db.code.findMany({
-                where: {
-                    code: codeString,
-                    ticket: {
-                        creatorID: runnerID,
-                        created: {
-                            gte: startOfDay,
-                            lte: endOfDay
-                        },
-                        // Only count codes from tickets that include the same game type
-                        games: {
-                            some: {
-                                gameID: isSuper4 ? 7 : { not: 7 }
+                
+                // 2. Check user daily limit for this code in this specific game
+                const userPlayedForCodeInGame = await this.db.code.findMany({
+                    where: {
+                        code: codeString,
+                        ticket: {
+                            creatorID: runnerID,
+                            created: {
+                                gte: startOfDay,
+                                lte: endOfDay
+                            },
+                            // Only count codes from tickets that include this specific game
+                            games: {
+                                some: {
+                                    gameID: gameID
+                                }
                             }
                         }
+                    },
+                    select: {
+                        value: true
                     }
-                },
-                select: {
-                    value: true
-                }
-            });
+                });
 
-            const userPlayedToday = userPlayedForCode.reduce((acc, code) => acc + code.value, 0);
-            
-            // Check if adding the new value would exceed the user's daily limit
-            if (userPlayedToday + newCodeValue > userDailyLimit) {
-                userExceededCodes.push(codeString);
+                const userPlayedInGame = userPlayedForCodeInGame.reduce((acc, code) => acc + code.value, 0);
+                
+                // Check if adding the new value would exceed the user's daily limit for this game+code
+                if (userPlayedInGame + newCodeValue > userDailyLimit) {
+                    userExceededCodes.push(`${codeString} (Game ID: ${gameID})`);
+                }
             }
         }
 
         // Throw appropriate errors
-        if (fourNumberCodeClosed.length > 0) {
-            throw new ValidationError(`De volgende 4-cijferige nummers zijn gesloten (dagelijkse maximum van €10 bereikt): ${fourNumberCodeClosed.join(", ")}`);
-        }
-        
         if (codeClosedCodes.length > 0) {
-            throw new ValidationError(`De volgende nummers zijn gesloten (dagelijkse maximum bereikt): ${codeClosedCodes.join(", ")}`);
+            throw new ValidationError(`De volgende 4-cijferige nummers zijn gesloten voor deze game (dagelijkse maximum van €10 bereikt): ${codeClosedCodes.join(", ")}`);
         }
         
         if (userExceededCodes.length > 0) {
