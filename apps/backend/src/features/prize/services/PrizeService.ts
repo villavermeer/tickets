@@ -4,6 +4,20 @@ import { ExtendedPrismaClient } from "../../../common/utils/prisma";
 import { Context } from "../../../common/utils/context";
 import { Prisma, Role } from "@prisma/client";
 
+// Prize structure from TicketService
+const PRIZE_STRUCTURE = {
+    USER: {
+        DEFAULT: {
+            4: 500,  // 5 euro per user per 4-digit code (non Super4)
+            3: 2500  // 25 euro per user per 3-digit code (non Super4)
+        },
+        SUPER4: {
+            4: 100,  // 1 euro per user per 4-digit code (Super4)
+            3: 500   // 5 euro per user per 3-digit code (Super4)
+        }
+    }
+};
+
 export interface PrizeCode {
     code: string;
     value: number;
@@ -31,6 +45,17 @@ export interface IPrizeService {
 export class PrizeService extends Service implements IPrizeService {
     constructor(@inject("Database") protected db: ExtendedPrismaClient) {
         super();
+    }
+
+    /**
+     * Calculate prize amount for a winning code based on code length and game type
+     */
+    private calculatePrizeAmount(code: string, gameID: number): number {
+        const codeLength = code.length;
+        const isSuper4 = gameID === 7;
+        const category = isSuper4 ? 'SUPER4' : 'DEFAULT';
+        
+        return PRIZE_STRUCTURE.USER[category][codeLength as keyof typeof PRIZE_STRUCTURE.USER[typeof category]] || 0;
     }
 
     /**
@@ -162,7 +187,7 @@ export class PrizeService extends Service implements IPrizeService {
                     ...c,
                     raffleOrder: codeToOrder.get(c.code) ?? 1
                 }));
-                const totalPrize = codesWithOrder.reduce((acc, code) => acc + (code.value ?? 0), 0);
+                const totalPrize = codesWithOrder.reduce((acc, code) => acc + this.calculatePrizeAmount(code.code, gameID), 0);
                 return {
                     id: t.id,
                     name: t.name,

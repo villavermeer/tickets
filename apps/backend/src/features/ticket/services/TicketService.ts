@@ -43,7 +43,7 @@ export class TicketService extends Service implements ITicketService {
         USER: {
             DEFAULT: {
                 4: 500,  // 5 euro per user per 4-digit code (non Super4)
-                3: 500   // 5 euro per user per 3-digit code (non Super4)
+                3: 2500  // 25 euro per user per 3-digit code (non Super4)
             },
             SUPER4: {
                 4: 100,  // 1 euro per user per 4-digit code (Super4)
@@ -1366,7 +1366,7 @@ export class TicketService extends Service implements ITicketService {
         if (globalBreaches.length) {
             const details = globalBreaches.map(breach => {
                 const gameLabel = gameNameMap.get(breach.gameID) || `Game ${breach.gameID}`;
-                return `${breach.code} (${breach.codeLength} cijfers, ${gameLabel}) – limiet €${(breach.limit / 100).toFixed(2)}`;
+                return `${breach.code} (${breach.codeLength} cijfers, ${gameLabel})`;
             }).join(', ');
             throw new ValidationError(`Deze codes hebben het dagelijkse maximum bereikt: ${details}`);
         }
@@ -1374,7 +1374,7 @@ export class TicketService extends Service implements ITicketService {
         if (userBreaches.length) {
             const details = userBreaches.map(breach => {
                 const gameLabel = gameNameMap.get(breach.gameID) || `Game ${breach.gameID}`;
-                return `${breach.code} (${breach.codeLength} cijfers, ${gameLabel}) – limiet €${(breach.limit / 100).toFixed(2)}`;
+                return `${breach.code} (${breach.codeLength} cijfers, ${gameLabel})`;
             }).join(', ');
             throw new ValidationError(`Je hebt de persoonlijke limiet overschreden voor: ${details}`);
         }
