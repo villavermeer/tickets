@@ -922,7 +922,6 @@ export class TicketService extends Service implements ITicketService {
                 const dayCalc = this.calculateDeduction(e.codeLength, totalAllDay, group.gameIds);
                 const committedCalc = committedValue > 0 ? this.calculateDeduction(e.codeLength, committedValue, group.gameIds) : { deduction: 0, finalValue: 0 };
                 const incrementalFinal = dayCalc.finalValue - committedCalc.finalValue;
-                if (incrementalFinal < 100) continue;
 
                 const incrementalValue = e.value;
                 const incrementalDeduction = Math.max(0, incrementalValue - incrementalFinal);
@@ -1082,8 +1081,7 @@ export class TicketService extends Service implements ITicketService {
                 .map(e => {
                     const { deduction, finalValue } = this.calculateDeduction(e.codeLength, e.value, group.gameIds);
                     return { code: e.code, codeLength: e.codeLength, value: e.value, deduction, final: finalValue };
-                })
-                .filter(e => e.final >= 100);
+                });
 
             // Aggregate totals from per-code results
             const totalGroupValue = entriesDetailed.reduce((sum, e) => sum + e.value, 0);
