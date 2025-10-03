@@ -5,4 +5,5 @@ export interface CreateTicketRequest {
     games: number[]
     runnerID: number
     codes: CodeInterface[]
+    relayed?: boolean
 }

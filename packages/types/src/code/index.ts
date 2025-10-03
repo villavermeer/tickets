@@ -1,6 +1,6 @@
 export interface CodeInterface {
     id: number
-    code: number
+    code: string
     value: number
     raffleID?: number
     ticketID?: number

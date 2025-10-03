@@ -2,7 +2,7 @@ import { inject, injectable } from "tsyringe";
 import Service from "../../../common/services/Service";
 import { ExtendedPrismaClient } from "../../../common/utils/prisma";
 import { Context } from "../../../common/utils/context";
-import { Role } from "@prisma/client";
+import { Prisma, Role } from "@prisma/client";
 
 export interface PrizeCode {
     code: string;
@@ -44,10 +44,18 @@ export class PrizeService extends Service implements IPrizeService {
         const currentUser = Context.get("user");
 
         // Compute date range
-        const startOfDay = new Date(date);
-        startOfDay.setHours(0, 0, 0, 0);
-        const endOfDay = new Date(date);
-        endOfDay.setHours(23, 59, 59, 999);
+        const startOfDay = new Date(Date.UTC(
+            date.getUTCFullYear(),
+            date.getUTCMonth(),
+            date.getUTCDate(),
+            0, 0, 0, 0
+        ));
+        const endOfDay = new Date(Date.UTC(
+            date.getUTCFullYear(),
+            date.getUTCMonth(),
+            date.getUTCDate(),
+            23, 59, 59, 999
+        ));
 
         // Determine user scope for filtering tickets
         let scopedUserIDs: number[] | undefined;
@@ -80,9 +88,20 @@ export class PrizeService extends Service implements IPrizeService {
         }
 
         // Find raffles created on the provided day and collect winning values by game
+        const raffleWhere: Prisma.RaffleWhereInput = {
+            OR: [
+                { created: { gte: startOfDay, lte: endOfDay } },
+                { updated: { gte: startOfDay, lte: endOfDay } }
+            ]
+        };
+
         const raffles = await this.db.raffle.findMany({
-            where: { created: { gte: startOfDay, lte: endOfDay } },
-            orderBy: { created: 'asc' },
+            where: raffleWhere,
+            distinct: ['id'],
+            orderBy: [
+                { created: 'asc' },
+                { id: 'asc' }
+            ],
             select: {
                 id: true,
                 created: true,
@@ -102,51 +121,56 @@ export class PrizeService extends Service implements IPrizeService {
             const entry = byGame.get(r.gameID) ?? { game: r.game, winningCodes: [] as string[], codeToOrder: new Map<string, number>() };
             // push winning codes for this raffle
             for (const c of r.codes) {
-                entry.winningCodes.push(c.code);
-            }
-            // order mapping (1-based) for codes as they appear across raffles in the day
-            r.codes.forEach((c) => {
                 if (!entry.codeToOrder.has(c.code)) {
                     entry.codeToOrder.set(c.code, entry.codeToOrder.size + 1);
                 }
-            });
+                entry.winningCodes.push(c.code);
+            }
+            // order mapping (1-based) for codes as they appear across raffles in the day
             byGame.set(r.gameID, entry);
         }
 
         const result: PrizeGroup[] = [];
 
         for (const [gameID, { game, winningCodes }] of byGame) {
-            if (winningCodes.length === 0) {
+            const uniqueWinningCodes = Array.from(new Set(winningCodes));
+            if (uniqueWinningCodes.length === 0) {
                 result.push({ game, tickets: [] });
                 continue;
             }
 
             const tickets = await this.db.ticket.findMany({
                 where: {
-                    created: { gte: startOfDay, lte: endOfDay },
                     creatorID: scopedUserIDs ? { in: scopedUserIDs } : undefined,
                     games: { some: { gameID } },
-                    codes: { some: { code: { in: winningCodes } } }
+                    codes: { some: { code: { in: uniqueWinningCodes } } }
                 },
                 select: {
                     id: true,
                     name: true,
                     creatorID: true,
                     codes: {
-                        where: { code: { in: winningCodes } },
+                        where: { code: { in: uniqueWinningCodes } },
                         select: { code: true, value: true }
                     }
                 }
             });
 
             const codeToOrder = byGame.get(gameID)?.codeToOrder ?? new Map();
-            const formatted: PrizeTicket[] = tickets.map(t => ({
-                id: t.id,
-                name: t.name,
-                creatorID: t.creatorID,
-                codes: (t.codes as PrizeCode[]).map(c => ({ ...c, raffleOrder: codeToOrder.get(c.code) ?? 1 })),
-                totalPrize: 0
-            }));
+            const formatted: PrizeTicket[] = tickets.map(t => {
+                const codesWithOrder = (t.codes as PrizeCode[]).map(c => ({
+                    ...c,
+                    raffleOrder: codeToOrder.get(c.code) ?? 1
+                }));
+                const totalPrize = codesWithOrder.reduce((acc, code) => acc + (code.value ?? 0), 0);
+                return {
+                    id: t.id,
+                    name: t.name,
+                    creatorID: t.creatorID,
+                    codes: codesWithOrder,
+                    totalPrize
+                };
+            });
 
             result.push({ game, tickets: formatted });
         }
@@ -156,5 +180,3 @@ export class PrizeService extends Service implements IPrizeService {
 }
 
 PrizeService.register("PrizeService");
-
-

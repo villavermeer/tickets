@@ -13,18 +13,18 @@ export default class Controller extends Singleton {
     }
 
     protected handleError(error: any, req: any, res: Response<any>): void {
-
-        console.error(error)
-
         if (error instanceof BaseError) {
+            const message = error.getMessage();
             res.status(error.getStatusCode()).json({
                 status: "error",
-                error: error.getMessage(),
+                error: message,
+                message
             });
         } else {
             res.status(500).json({
                 status: "error",
                 error: "Something went wrong... please try again later",
+                message: "Something went wrong... please try again later",
             });
         }
     }

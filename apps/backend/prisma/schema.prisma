@@ -9,45 +9,154 @@ datasource db {
 }
 
 model User {
-  id Int @id @default(autoincrement())
-
-  password String
-  name     String
-  username String @unique
-
-  role Role @default(CLIENT)
-
-  tickets Ticket[]
-
-  runners ManagerRunner[] @relation("Manager")
-  manager ManagerRunner[] @relation("Runner")
-
-  created DateTime @default(now())
-  updated DateTime @updatedAt
-
-  commission Float @default(0.0)
+  id         Int             @id @default(autoincrement())
+  password   String
+  name       String
+  username   String          @unique
+  role       Role            @default(CLIENT)
+  created    DateTime        @default(now())
+  updated    DateTime        @updatedAt
+  commission Float           @default(0.0)
   balance    Balance?
+  runners    ManagerRunner[] @relation("Manager")
+  manager    ManagerRunner[] @relation("Runner")
+  tickets    Ticket[]
 
   @@index([id])
   @@map("users")
 }
 
 model ManagerRunner {
-  id Int @id @default(autoincrement())
-
+  id        Int      @id @default(autoincrement())
   managerID Int
-  manager   User @relation("Manager", fields: [managerID], references: [id], onDelete: Cascade)
-
-  runnerID Int
-  runner   User @relation("Runner", fields: [runnerID], references: [id], onDelete: Cascade)
-
-  created DateTime @default(now())
-  updated DateTime @updatedAt
+  runnerID  Int
+  created   DateTime @default(now())
+  updated   DateTime @updatedAt
+  manager   User     @relation("Manager", fields: [managerID], references: [id], onDelete: Cascade)
+  runner    User     @relation("Runner", fields: [runnerID], references: [id], onDelete: Cascade)
 
   @@index([id])
   @@index([managerID])
   @@index([runnerID])
   @@map("manager_runners")
+}
+
+model Ticket {
+  id        Int          @id @default(autoincrement())
+  created   DateTime     @default(now())
+  updated   DateTime     @updatedAt
+  name      String
+  creatorID Int
+  codes     Code[]
+  games     TicketGame[]
+  creator   User         @relation(fields: [creatorID], references: [id], onDelete: Cascade)
+
+  @@index([id])
+  @@index([creatorID])
+  @@index([created])
+  @@map("tickets")
+}
+
+model Code {
+  id           Int         @id @default(autoincrement())
+  code         String
+  ticketID     Int?
+  created      DateTime    @default(now())
+  updated      DateTime    @updatedAt
+  value        Int
+  raffleID     Int?
+  relayBatchID Int?
+  relayed      DateTime?
+  raffle       Raffle?     @relation(fields: [raffleID], references: [id], onDelete: Cascade)
+  relayBatch   RelayBatch? @relation(fields: [relayBatchID], references: [id])
+  ticket       Ticket?     @relation(fields: [ticketID], references: [id], onDelete: Cascade)
+
+  @@index([id])
+  @@index([ticketID])
+  @@index([raffleID])
+  @@map("codes")
+}
+
+model Game {
+  id      Int          @id @default(autoincrement())
+  name    String
+  expires GameExpiry   @default(MIDDAY)
+  created DateTime     @default(now())
+  updated DateTime     @updatedAt
+  raffles Raffle[]
+  tickets TicketGame[]
+
+  @@index([id])
+  @@map("games")
+}
+
+model TicketGame {
+  id       Int      @id @default(autoincrement())
+  ticketID Int
+  gameID   Int
+  created  DateTime @default(now())
+  updated  DateTime @updatedAt
+  game     Game     @relation(fields: [gameID], references: [id], onDelete: Cascade)
+  ticket   Ticket   @relation(fields: [ticketID], references: [id], onDelete: Cascade)
+
+  @@index([id])
+  @@map("ticket_games")
+}
+
+model Raffle {
+  id      Int      @id @default(autoincrement())
+  created DateTime @default(now())
+  updated DateTime @updatedAt
+  gameID  Int
+  codes   Code[]
+  game    Game     @relation(fields: [gameID], references: [id], onDelete: Cascade)
+
+  @@index([id])
+  @@index([gameID])
+  @@map("raffles")
+}
+
+model RelayBatch {
+  id      Int      @id @default(autoincrement())
+  start   DateTime
+  end     DateTime
+  created DateTime @default(now())
+  updated DateTime @updatedAt
+  codes   Code[]
+
+  @@index([id])
+  @@map("relay_batches")
+}
+
+model Balance {
+  id      Int             @id @default(autoincrement())
+  userID  Int             @unique
+  balance Int             @default(0)
+  created DateTime        @default(now())
+  updated DateTime        @updatedAt
+  actions BalanceAction[]
+  user    User            @relation(fields: [userID], references: [id], onDelete: Cascade)
+
+  @@index([id])
+  @@index([userID])
+  @@map("balances")
+}
+
+model BalanceAction {
+  id        Int               @id @default(autoincrement())
+  balanceID Int
+  type      BalanceActionType
+  amount    Int
+  reference String?
+  created   DateTime          @default(now())
+  updated   DateTime          @updatedAt
+  balance   Balance           @relation(fields: [balanceID], references: [id], onDelete: Cascade)
+
+  @@index([id])
+  @@index([balanceID])
+  @@index([type])
+  @@index([created])
+  @@map("balance_actions")
 }
 
 enum Role {
@@ -57,162 +166,14 @@ enum Role {
   MANAGER
 }
 
-model Ticket {
-  id Int @id @default(autoincrement())
-
-  name String
-
-  creatorID Int
-  creator   User @relation(fields: [creatorID], references: [id], onDelete: Cascade)
-
-  created DateTime @default(now())
-  updated DateTime @updatedAt
-
-  codes Code[]
-  games TicketGame[]
-
-  @@index([id])
-  @@index([creatorID])
-  @@index([created])
-  @@map("tickets")
-}
-
-model Code {
-  id Int @id @default(autoincrement())
-
-  code  String
-  value Int
-
-  ticketID Int?
-  ticket   Ticket? @relation(fields: [ticketID], references: [id], onDelete: Cascade)
-
-  raffleID Int?
-  raffle   Raffle? @relation(fields: [raffleID], references: [id], onDelete: Cascade)
-
-  created    DateTime @default(now())
-  updated    DateTime @updatedAt
-  relayed  DateTime?
-
-  relayBatchID Int?
-  relayBatch   RelayBatch? @relation(fields: [relayBatchID], references: [id], onDelete: SetNull)
-
-  @@index([id])
-  @@index([ticketID])
-  @@index([raffleID])
-  @@map("codes")
-}
-
 enum GameExpiry {
   MIDDAY
   MIDNIGHT
   CUSTOM
 }
 
-model Game {
-  id Int @id @default(autoincrement())
-
-  name String
-
-  expires GameExpiry @default(MIDDAY)
-
-  raffles Raffle[]
-  tickets TicketGame[]
-
-  created DateTime @default(now())
-  updated DateTime @updatedAt
-
-  @@index([id])
-  @@map("games")
-}
-
-model TicketGame {
-  id Int @id @default(autoincrement())
-
-  ticketID Int
-  ticket   Ticket @relation(fields: [ticketID], references: [id], onDelete: Cascade)
-
-  gameID Int
-  game   Game @relation(fields: [gameID], references: [id], onDelete: Cascade)
-
-  created DateTime @default(now())
-  updated DateTime @updatedAt
-
-  @@index([id])
-  @@map("ticket_games")
-}
-
-model Raffle {
-  id Int @id @default(autoincrement())
-
-  gameID Int
-  game   Game @relation(fields: [gameID], references: [id], onDelete: Cascade)
-
-  codes   Code[]
-
-  created DateTime @default(now())
-  updated DateTime @updatedAt
-
-  @@index([id])
-  @@index([gameID])
-  @@map("raffles")
-}
-
-model RelayBatch {
-  id           Int      @id @default(autoincrement())
-
-  start        DateTime
-  end          DateTime
-
-  codes        Code[]
-
-  created      DateTime @default(now())
-  updated      DateTime @updatedAt
-
-  @@index([id])
-  @@map("relay_batches")
-}
-
-model Balance {
-  id Int @id @default(autoincrement())
-
-  userID Int @unique
-  user   User @relation(fields: [userID], references: [id], onDelete: Cascade)
-
-  balance Int @default(0)
-
-  actions BalanceAction[]
-
-  created DateTime @default(now())
-  updated DateTime @updatedAt
-
-  @@index([id])
-  @@index([userID])
-  @@map("balances")
-}
-
 enum BalanceActionType {
   PAYOUT
   CORRECTION
   TICKET_SALE
-}
-
-model BalanceAction {
-  id Int @id @default(autoincrement())
-
-  balanceID Int
-  balance   Balance @relation(fields: [balanceID], references: [id], onDelete: Cascade)
-
-  type BalanceActionType
-  
-  amount Int
-  reference String?
-
-  created DateTime @default(now())
-  updated DateTime @updatedAt
-
-  @@index([id])
-  @@index([balanceID])
-  @@index([type])
-  @@index([created])
-  @@map("balance_actions")
 }
