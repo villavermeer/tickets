@@ -16,11 +16,19 @@ export class PrizeController extends Controller implements IPrizeController {
         try {
             const date = req.query.date ? new Date(req.query.date as string) : new Date();
             const scopeUserID = req.query.userID ? Number(req.query.userID) : undefined;
+            const page = req.query.page ? Math.max(1, Number(req.query.page)) : 1;
+            const pageSize = req.query.pageSize ? Math.max(1, Math.min(200, Number(req.query.pageSize))) : 50;
 
             const service = container.resolve<IPrizeService>("PrizeService");
-            const prizes = await service.getPrizesByDate(date, scopeUserID);
+            const payload = await service.getPrizesByDate(date, scopeUserID, page, pageSize);
 
-            res.status(200).json(formatSuccessResponse("Prizes", prizes));
+            res.status(200).json(formatSuccessResponse("Prizes", {
+                prizes: payload.groups,
+                page: payload.page,
+                pageSize: payload.pageSize,
+                hasMore: payload.hasMore,
+                totalTickets: payload.totalTickets
+            }));
         } catch (error) {
             this.handleError(error, req, res);
         }

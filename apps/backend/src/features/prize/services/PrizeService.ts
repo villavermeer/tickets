@@ -4,19 +4,18 @@ import { ExtendedPrismaClient } from "../../../common/utils/prisma";
 import { Context } from "../../../common/utils/context";
 import { Prisma, Role } from "@prisma/client";
 
-// Prize structure from TicketService
-const PRIZE_STRUCTURE = {
-    USER: {
-        DEFAULT: {
-            4: 500,  // 5 euro per user per 4-digit code (non Super4)
-            3: 2500  // 25 euro per user per 3-digit code (non Super4)
-        },
-        SUPER4: {
-            4: 100,  // 1 euro per user per 4-digit code (Super4)
-            3: 500   // 5 euro per user per 3-digit code (Super4)
-        }
-    }
-};
+// Multiplier matrix provided by PO
+// Amount won = stake (inleg) x multiplier
+// For DEFAULT games, multiplier depends on raffle order (1..3) and code length (2,3,4)
+// For SUPER4 game, multiplier depends only on code length
+const MULTIPLIERS = {
+    DEFAULT: {
+        1: { 4: 3000, 3: 400, 2: 40 },
+        2: { 4: 1500, 3: 200, 2: 20 },
+        3: { 4: 750, 3: 100, 2: 10 },
+    },
+    SUPER4: { 4: 5250, 3: 700, 2: 70 }
+} as const;
 
 export interface PrizeCode {
     code: string;
@@ -38,7 +37,7 @@ export interface PrizeGroup {
 }
 
 export interface IPrizeService {
-    getPrizesByDate(date: Date, scopeUserID?: number): Promise<PrizeGroup[]>;
+    getPrizesByDate(date: Date, scopeUserID?: number, page?: number, pageSize?: number): Promise<{ groups: PrizeGroup[]; page: number; pageSize: number; hasMore: boolean; totalTickets: number }>;
 }
 
 @injectable()
@@ -48,14 +47,38 @@ export class PrizeService extends Service implements IPrizeService {
     }
 
     /**
-     * Calculate prize amount for a winning code based on code length and game type
+     * Calculate winnings for a played code against all winning codes for a game/day.
+     * - Matches on suffix: a 2-digit play wins when it matches the last 2 of a winning 4-digit code, etc.
+     * - DEFAULT games: multiplier depends on raffle order (1..3) and code length
+     * - SUPER4: multiplier depends only on code length
      */
-    private calculatePrizeAmount(code: string, gameID: number): number {
-        const codeLength = code.length;
+    private calculateWinningsForCode(
+        playedCode: string,
+        stakeValue: number,
+        gameID: number,
+        winningCodesWithOrder: Array<{ code: string; order: number }>
+    ): { total: number; perOccurrence: Array<{ order: number; value: number }> } {
+        const codeLength = playedCode.length;
         const isSuper4 = gameID === 7;
-        const category = isSuper4 ? 'SUPER4' : 'DEFAULT';
-        
-        return PRIZE_STRUCTURE.USER[category][codeLength as keyof typeof PRIZE_STRUCTURE.USER[typeof category]] || 0;
+
+        let total = 0;
+        const perOccurrence: Array<{ order: number; value: number }> = [];
+
+        for (const { code: winningCode, order } of winningCodesWithOrder) {
+            if (!winningCode.endsWith(playedCode)) continue;
+
+            const multiplier = isSuper4
+                ? (MULTIPLIERS.SUPER4 as any)[codeLength] ?? 0
+                : ((MULTIPLIERS.DEFAULT as any)[order]?.[codeLength] ?? 0);
+
+            if (multiplier > 0) {
+                const value = stakeValue * multiplier;
+                total += value;
+                perOccurrence.push({ order, value });
+            }
+        }
+
+        return { total, perOccurrence };
     }
 
     /**
@@ -65,7 +88,7 @@ export class PrizeService extends Service implements IPrizeService {
      * - MANAGER: self + runners under the manager, or a specific runner when provided
      * - RUNNER: only self regardless of the provided scopeUserID
      */
-    public async getPrizesByDate(date: Date, scopeUserID?: number): Promise<PrizeGroup[]> {
+    public async getPrizesByDate(date: Date, scopeUserID?: number, page: number = 1, pageSize: number = 50): Promise<{ groups: PrizeGroup[]; page: number; pageSize: number; hasMore: boolean; totalTickets: number }> {
         const currentUser = Context.get("user");
 
         // Compute date range
@@ -136,7 +159,7 @@ export class PrizeService extends Service implements IPrizeService {
             }
         });
 
-        if (raffles.length === 0) return [];
+        if (raffles.length === 0) return { groups: [], page, pageSize, hasMore: false, totalTickets: 0 };
 
         const byGame = new Map<
             number,
@@ -156,6 +179,7 @@ export class PrizeService extends Service implements IPrizeService {
         }
 
         const result: PrizeGroup[] = [];
+        let totalTickets = 0;
 
         for (const [gameID, { game, winningCodes }] of byGame) {
             const uniqueWinningCodes = Array.from(new Set(winningCodes));
@@ -164,35 +188,73 @@ export class PrizeService extends Service implements IPrizeService {
                 continue;
             }
 
+            // Build suffix sets (2, 3, 4) for efficient filtering
+            const suffix2 = new Set(uniqueWinningCodes.map(c => c.slice(-2)));
+            const suffix3 = new Set(uniqueWinningCodes.map(c => c.slice(-3)));
+            const suffix4 = new Set(uniqueWinningCodes.map(c => c.slice(-4)));
+
+            const whereTickets: Prisma.TicketWhereInput = {
+                creatorID: scopedUserIDs ? { in: scopedUserIDs } : undefined,
+                games: { some: { gameID } },
+                // Any code that equals any of the winning suffixes for 2, 3 or 4 digits
+                codes: {
+                    some: {
+                        OR: [
+                            { code: { in: Array.from(suffix2) } },
+                            { code: { in: Array.from(suffix3) } },
+                            { code: { in: Array.from(suffix4) } }
+                        ]
+                    }
+                }
+            };
+
+            const count = await this.db.ticket.count({ where: whereTickets });
+            totalTickets += count;
+
             const tickets = await this.db.ticket.findMany({
-                where: {
-                    creatorID: scopedUserIDs ? { in: scopedUserIDs } : undefined,
-                    games: { some: { gameID } },
-                    codes: { some: { code: { in: uniqueWinningCodes } } }
-                },
+                where: whereTickets,
                 select: {
                     id: true,
                     name: true,
                     creatorID: true,
                     codes: {
-                        where: { code: { in: uniqueWinningCodes } },
+                        // Keep all played codes that can potentially win (2/3/4 length)
+                        where: {
+                            OR: [
+                                { code: { in: Array.from(suffix2) } },
+                                { code: { in: Array.from(suffix3) } },
+                                { code: { in: Array.from(suffix4) } }
+                            ]
+                        },
                         select: { code: true, value: true }
                     }
-                }
+                },
+                orderBy: { id: 'asc' },
+                skip: (page - 1) * pageSize,
+                take: pageSize
             });
 
             const codeToOrder = byGame.get(gameID)?.codeToOrder ?? new Map();
+            const winningWithOrder = Array.from(uniqueWinningCodes).map(code => ({ code, order: codeToOrder.get(code) ?? 1 }));
+
             const formatted: PrizeTicket[] = tickets.map(t => {
-                const codesWithOrder = (t.codes as PrizeCode[]).map(c => ({
-                    ...c,
-                    raffleOrder: codeToOrder.get(c.code) ?? 1
-                }));
-                const totalPrize = codesWithOrder.reduce((acc, code) => acc + this.calculatePrizeAmount(code.code, gameID), 0);
+                const perCodeOccurrences: PrizeCode[] = [];
+
+                for (const played of t.codes as unknown as Array<{ code: string; value: number }>) {
+                    const { total, perOccurrence } = this.calculateWinningsForCode(played.code, played.value, gameID, winningWithOrder);
+
+                    // Duplicate code entry per occurrence so UI can show multiple trek orders
+                    for (const occ of perOccurrence) {
+                        perCodeOccurrences.push({ code: played.code, value: occ.value, raffleOrder: occ.order });
+                    }
+                }
+
+                const totalPrize = perCodeOccurrences.reduce((acc, c) => acc + c.value, 0);
                 return {
                     id: t.id,
                     name: t.name,
                     creatorID: t.creatorID,
-                    codes: codesWithOrder,
+                    codes: perCodeOccurrences,
                     totalPrize
                 };
             });
@@ -200,7 +262,8 @@ export class PrizeService extends Service implements IPrizeService {
             result.push({ game, tickets: formatted });
         }
 
-        return result;
+        const hasMore = page * pageSize < totalTickets;
+        return { groups: result, page, pageSize, hasMore, totalTickets };
     }
 }
 

@@ -33,10 +33,11 @@ basePrisma.$use(async (params: Prisma.MiddlewareParams, next: (params: Prisma.Mi
                         select: {
                             id: true,
                             creatorID: true,
+                            created: true,
                             codes: { select: { value: true } },
                         },
                     },
-                }) as { id: number; creatorID: number; codes: Array<{ value: number }> } | null;
+                }) as { id: number; creatorID: number; created: Date; codes: Array<{ value: number }> } | null;
 
                 if (!ticket) continue;
 
@@ -82,6 +83,7 @@ basePrisma.$use(async (params: Prisma.MiddlewareParams, next: (params: Prisma.Mi
                             type: BalanceActionType.TICKET_SALE,
                             amount: totalStake,
                             reference,
+                            created: ticket.created,
                         },
                     },
                 });

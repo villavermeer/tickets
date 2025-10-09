@@ -4,6 +4,7 @@ import { ExtendedPrismaClient } from "../../../common/utils/prisma";
 import { TicketMapper } from "../../ticket/mappers/TicketMapper";
 import { Context } from "../../../common/utils/context";
 import { Role, User, Ticket as PrismaTicket, Raffle } from "@prisma/client";
+import { DateTime } from "luxon";
 
 export interface IRevenueService {
     getRevenueByDate(date: Date): Promise<RevenueResult>;
@@ -145,10 +146,10 @@ export class RevenueService extends Service implements IRevenueService {
     }
 
     private getDateRange(date: Date) {
-        const startOfDay = new Date(date);
-        startOfDay.setHours(0, 0, 0, 0);
-        const endOfDay = new Date(date);
-        endOfDay.setHours(23, 59, 59, 999);
+        // Convert to Amsterdam timezone and get day boundaries
+        const amsterdamDate = DateTime.fromJSDate(date).setZone('Europe/Amsterdam');
+        const startOfDay = amsterdamDate.startOf('day').toUTC().toJSDate();
+        const endOfDay = amsterdamDate.endOf('day').toUTC().toJSDate();
         return { startOfDay, endOfDay };
     }
 

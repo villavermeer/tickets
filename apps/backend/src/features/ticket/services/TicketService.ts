@@ -204,15 +204,15 @@ export class TicketService extends Service implements ITicketService {
             throw new ValidationError('Ticket niet gevonden');
         }
 
-        // check if the ticket was created today (same day editing only)
-        const today = new Date();
-        const ticketCreatedDate = new Date(ticket.created);
+        // check if the ticket was created today (same day editing only) - use Amsterdam timezone
+        const nowAmsterdam = DateTime.now().setZone('Europe/Amsterdam');
+        const ticketCreatedAmsterdam = DateTime.fromJSDate(ticket.created).setZone('Europe/Amsterdam');
         
-        // Set both dates to start of day for comparison
-        const todayStart = new Date(today.getFullYear(), today.getMonth(), today.getDate());
-        const ticketDateStart = new Date(ticketCreatedDate.getFullYear(), ticketCreatedDate.getMonth(), ticketCreatedDate.getDate());
+        // Compare the dates in Amsterdam timezone (year-month-day)
+        const todayDateStr = nowAmsterdam.toFormat('yyyy-MM-dd');
+        const ticketDateStr = ticketCreatedAmsterdam.toFormat('yyyy-MM-dd');
         
-        if (todayStart.getTime() !== ticketDateStart.getTime()) {
+        if (todayDateStr !== ticketDateStr) {
             throw new ValidationError('Tickets kunnen alleen worden bewerkt op dezelfde dag als ze zijn aangemaakt');
         }
 
@@ -332,10 +332,10 @@ export class TicketService extends Service implements ITicketService {
             date = new Date();
         }
 
-        const startOfDay = new Date(date.getTime());
-        startOfDay.setHours(0, 0, 0, 0);
-        const endOfDay = new Date(date.getTime());
-        endOfDay.setHours(23, 59, 59, 999);
+        // Convert to Amsterdam timezone and get day boundaries
+        const amsterdamDate = DateTime.fromJSDate(date).setZone('Europe/Amsterdam');
+        const startOfDay = amsterdamDate.startOf('day').toUTC().toJSDate();
+        const endOfDay = amsterdamDate.endOf('day').toUTC().toJSDate();
 
         const tickets = await this.db.ticket.findMany({
             select: TicketMapper.getSelectableFields(),
@@ -689,15 +689,15 @@ export class TicketService extends Service implements ITicketService {
             throw new ValidationError('You are not allowed to delete this ticket');
         }
 
-        // check if the ticket was created today (same day editing only)
-        const today = new Date();
-        const ticketCreatedDate = new Date(ticket.created);
+        // check if the ticket was created today (same day editing only) - use Amsterdam timezone
+        const nowAmsterdam = DateTime.now().setZone('Europe/Amsterdam');
+        const ticketCreatedAmsterdam = DateTime.fromJSDate(ticket.created).setZone('Europe/Amsterdam');
         
-        // Set both dates to start of day for comparison
-        const todayStart = new Date(today.getFullYear(), today.getMonth(), today.getDate());
-        const ticketDateStart = new Date(ticketCreatedDate.getFullYear(), ticketCreatedDate.getMonth(), ticketCreatedDate.getDate());
+        // Compare the dates in Amsterdam timezone (year-month-day)
+        const todayDateStr = nowAmsterdam.toFormat('yyyy-MM-dd');
+        const ticketDateStr = ticketCreatedAmsterdam.toFormat('yyyy-MM-dd');
         
-        if (todayStart.getTime() !== ticketDateStart.getTime()) {
+        if (todayDateStr !== ticketDateStr) {
             throw new ValidationError('Tickets kunnen alleen worden verwijderd op dezelfde dag als ze zijn aangemaakt');
         }
 
@@ -732,6 +732,15 @@ export class TicketService extends Service implements ITicketService {
             const startDate = this.parseDateParameter(start, true);
             const endDate = this.parseDateParameter(end, false);
 
+            console.log('getRelayableTickets - Parsed dates:', {
+                originalStart: start,
+                originalEnd: end,
+                parsedStart: startDate.toISOString(),
+                parsedEnd: endDate.toISOString(),
+                startUTC: startDate.toUTCString(),
+                endUTC: endDate.toUTCString()
+            });
+
             const tickets = await this.db.ticket.findMany({
                 where: {
                     created: {
@@ -739,7 +748,14 @@ export class TicketService extends Service implements ITicketService {
                         lte: endDate
                     }
                 },
-                select: { id: true }
+                select: { id: true, created: true }
+            });
+
+            console.log('getRelayableTickets - Found tickets:', {
+                count: tickets.length,
+                ticketIds: tickets.map(t => t.id),
+                firstTicketCreated: tickets[0]?.created?.toISOString(),
+                lastTicketCreated: tickets[tickets.length - 1]?.created?.toISOString()
             });
 
             const codes = await this.db.code.findMany({
@@ -756,8 +772,27 @@ export class TicketService extends Service implements ITicketService {
                 }
             });
 
+            console.log('getRelayableTickets - Found codes:', {
+                count: codes.length,
+                sampleCodes: codes.slice(0, 5).map(c => ({ 
+                    id: c.id, 
+                    code: c.code, 
+                    value: c.value, 
+                    ticketId: c.ticketID
+                }))
+            });
+
             // For non-commit exports, we want incremental results that account for prior commits earlier the same day
-            results = await this.buildRelayableChunksIncremental(codes, startDate, endDate);
+            try {
+                results = await this.buildRelayableChunksIncremental(codes, startDate, endDate);
+                console.log('getRelayableTickets - Results generated:', {
+                    chunkCount: results.length,
+                    totalEntries: results.reduce((sum, chunk) => sum + chunk.entries.length, 0)
+                });
+            } catch (error) {
+                console.error('getRelayableTickets - Error in buildRelayableChunksIncremental:', error);
+                throw error;
+            }
         }
 
         if (!combineAcrossGames) {
@@ -857,11 +892,29 @@ export class TicketService extends Service implements ITicketService {
             }
         });
 
-        // Determine the day window from the start time (assumes exports are per-day; if multi-day, use the first day)
-        const dayStart = new Date(windowStart);
-        dayStart.setUTCHours(0, 0, 0, 0);
-        const dayEnd = new Date(windowStart);
-        dayEnd.setUTCHours(23, 59, 59, 999);
+        // Determine the day window from the start time in Amsterdam timezone
+        // Convert windowStart to Amsterdam timezone to get the correct day boundaries
+        let dayStart: Date;
+        let dayEnd: Date;
+        
+        try {
+            const windowStartAmsterdam = DateTime.fromJSDate(windowStart).setZone('Europe/Amsterdam');
+            dayStart = windowStartAmsterdam.startOf('day').toUTC().toJSDate();
+            dayEnd = windowStartAmsterdam.endOf('day').toUTC().toJSDate();
+            
+            console.log('buildRelayableChunksIncrementalDetailed - Day boundaries:', {
+                windowStart: windowStart.toISOString(),
+                dayStart: dayStart.toISOString(),
+                dayEnd: dayEnd.toISOString()
+            });
+        } catch (error) {
+            console.error('Error calculating day boundaries:', error);
+            // Fallback to UTC calculation
+            dayStart = new Date(windowStart);
+            dayStart.setUTCHours(0, 0, 0, 0);
+            dayEnd = new Date(windowStart);
+            dayEnd.setUTCHours(23, 59, 59, 999);
+        }
 
         const chunks: ChunkedRelayableTicket[] = [];
         for (const group of Array.from(groups.values())) {
@@ -919,14 +972,19 @@ export class TicketService extends Service implements ITicketService {
                 }
                 if (!meetsThreshold) continue;
 
-                const dayCalc = this.calculateDeduction(e.codeLength, totalAllDay, group.gameIds);
-                const committedCalc = committedValue > 0 ? this.calculateDeduction(e.codeLength, committedValue, group.gameIds) : { deduction: 0, finalValue: 0 };
-                const incrementalFinal = dayCalc.finalValue - committedCalc.finalValue;
+                // Calculate deduction directly on the window value
+                const windowCalc = this.calculateDeduction(e.codeLength, e.value, group.gameIds);
 
-                const incrementalValue = e.value;
-                const incrementalDeduction = Math.max(0, incrementalValue - incrementalFinal);
+                // Skip codes with zero or negative window value or final value
+                if (e.value <= 0 || windowCalc.finalValue <= 0) continue;
 
-                entriesDetailed.push({ code: e.code, codeLength: e.codeLength, value: incrementalValue, deduction: incrementalDeduction, final: incrementalFinal });
+                entriesDetailed.push({ 
+                    code: e.code, 
+                    codeLength: e.codeLength, 
+                    value: e.value, 
+                    deduction: windowCalc.deduction, 
+                    final: windowCalc.finalValue 
+                });
                 e.ids.forEach(id => relayableCodeIds.add(id));
             }
 
@@ -966,40 +1024,35 @@ export class TicketService extends Service implements ITicketService {
             return new Date(dateParam);
         }
         
-        // 2. Handle "YYYY-MM-DD" format - convert to start/end of day
+        // 2. Handle "YYYY-MM-DD" format - convert to start/end of day in Amsterdam timezone
         if (/^\d{4}-\d{2}-\d{2}$/.test(dateParam)) {
-            const date = new Date(dateParam);
-            if (isStartDate) {
-                // Start of day: 00:00:00.000
-                date.setHours(0, 0, 0, 0);
-            } else {
-                // End of day: 23:59:59.999
-                date.setHours(23, 59, 59, 999);
+            const parsed = DateTime.fromFormat(dateParam, 'yyyy-MM-dd', { zone: 'Europe/Amsterdam' });
+            if (parsed.isValid) {
+                if (isStartDate) {
+                    return parsed.startOf('day').toUTC().toJSDate();
+                } else {
+                    return parsed.endOf('day').toUTC().toJSDate();
+                }
             }
-            return date;
         }
         
         // 3. Handle "YYYY-MM-DD HH:MM" format
         if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(dateParam)) {
-            return new Date(dateParam + ':00');
+            const parsed = DateTime.fromFormat(dateParam, 'yyyy-MM-dd HH:mm', { zone: 'Europe/Amsterdam' });
+            if (parsed.isValid) {
+                return parsed.toUTC().toJSDate();
+            }
         }
         
         // 4. Handle "YYYY-MM-DD HH:MM:SS" format
         if (/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$/.test(dateParam)) {
-            return new Date(dateParam);
-        }
-        
-        // 5. Try to parse with Luxon for other formats
-        try {
-            const parsed = DateTime.fromFormat(dateParam, 'yyyy-MM-dd HH:mm:ss');
+            const parsed = DateTime.fromFormat(dateParam, 'yyyy-MM-dd HH:mm:ss', { zone: 'Europe/Amsterdam' });
             if (parsed.isValid) {
-                return parsed.toJSDate();
+                return parsed.toUTC().toJSDate();
             }
-        } catch (e) {
-            // Continue to next format
         }
         
-        // If none of the above work, try to parse as-is (will throw error if invalid)
+        // 5. Fallback: try to parse as-is (will throw error if invalid)
         return new Date(dateParam);
     }
 

@@ -8,6 +8,7 @@ import { RaffleMapper } from '../mappers/RaffleMapper';
 import { CodeMapper } from '../../code/mappers/CodeMapper';
 import { Game, Ticket } from '@prisma/client';
 import { GameInterface, TicketInterface } from '@tickets/types';
+import { DateTime } from 'luxon';
 
 export interface IRaffleService {
     save(data: Array<CreateRaffleRequest>): Promise<void>
@@ -55,9 +56,11 @@ class RaffleService extends Service implements IRaffleService {
 
             if (existingRaffle) {
                 // Raffle exists, update codes by first deleting existing ones
+                // Only delete codes that don't belong to tickets
                 await this.db.code.deleteMany({
                     where: {
-                        raffleID: existingRaffle.id
+                        raffleID: existingRaffle.id,
+                        ticketID: null
                     }
                 });
 
@@ -92,9 +95,9 @@ class RaffleService extends Service implements IRaffleService {
     }
 
     public async today() {
-        const yesterday = new Date();
-        yesterday.setDate(yesterday.getDate() - 1);
-        yesterday.setHours(0, 0, 0, 0);
+        // Get yesterday's start in Amsterdam timezone
+        const yesterdayAmsterdam = DateTime.now().setZone('Europe/Amsterdam').minus({ days: 1 });
+        const yesterday = yesterdayAmsterdam.startOf('day').toUTC().toJSDate();
 
         const raffle = await this.db.raffle.findMany({
             select: RaffleMapper.getSelectableFields(),
@@ -117,12 +120,17 @@ class RaffleService extends Service implements IRaffleService {
     }
 
     public async date(date: Date) {
+        // Convert to Amsterdam timezone and get day boundaries
+        const amsterdamDate = DateTime.fromJSDate(date).setZone('Europe/Amsterdam');
+        const startOfDay = amsterdamDate.startOf('day').toUTC().toJSDate();
+        const endOfDay = amsterdamDate.endOf('day').toUTC().toJSDate();
+
         const raffles = await this.db.raffle.findMany({
             select: RaffleMapper.getSelectableFields(),
             where: {
                 created: {
-                    gte: new Date(date.setHours(0, 0, 0, 0)),
-                    lte: new Date(date.setHours(23, 59, 59, 999))
+                    gte: startOfDay,
+                    lte: endOfDay
                 }
             }
         });
@@ -144,12 +152,10 @@ class RaffleService extends Service implements IRaffleService {
     public async getWinningTicketsByDate(date: Date) {
         console.debug(`getWinningTicketsByDate called with date: ${date.toISOString()}`);
         
-        // ── 1 ── build immutable day-start / day-end boundaries
-        const startOfDay = new Date(date);
-        startOfDay.setHours(0, 0, 0, 0);
-
-        const endOfDay = new Date(date);
-        endOfDay.setHours(23, 59, 59, 999);
+        // ── 1 ── build immutable day-start / day-end boundaries in Amsterdam timezone
+        const amsterdamDate = DateTime.fromJSDate(date).setZone('Europe/Amsterdam');
+        const startOfDay = amsterdamDate.startOf('day').toUTC().toJSDate();
+        const endOfDay = amsterdamDate.endOf('day').toUTC().toJSDate();
 
         console.debug(`Start of day: ${startOfDay.toISOString()}, End of day: ${endOfDay.toISOString()}`);
 
