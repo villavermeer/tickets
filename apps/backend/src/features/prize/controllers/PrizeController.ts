@@ -27,7 +27,9 @@ export class PrizeController extends Controller implements IPrizeController {
                 page: payload.page,
                 pageSize: payload.pageSize,
                 hasMore: payload.hasMore,
-                totalTickets: payload.totalTickets
+                totalTickets: payload.totalTickets,
+                runnerTotals: payload.runnerTotals,
+                managerTotals: payload.managerTotals
             }));
         } catch (error) {
             this.handleError(error, req, res);
@@ -36,5 +38,4 @@ export class PrizeController extends Controller implements IPrizeController {
 }
 
 PrizeController.register("PrizeController");
-
 
