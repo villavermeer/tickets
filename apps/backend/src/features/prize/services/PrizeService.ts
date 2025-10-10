@@ -22,6 +22,7 @@ export interface PrizeCode {
     code: string;
     value: number;
     raffleOrder?: number;
+    stake: number;
 }
 
 export interface PrizeTicket {
@@ -342,7 +343,7 @@ export class PrizeService extends Service implements IPrizeService {
 
                     // Duplicate code entry per occurrence so UI can show multiple trek orders
                     for (const occ of perOccurrence) {
-                        perCodeOccurrences.push({ code: played.code, value: occ.value, raffleOrder: occ.order });
+                        perCodeOccurrences.push({ code: played.code, value: occ.value, raffleOrder: occ.order, stake: played.value });
                     }
                 }
 

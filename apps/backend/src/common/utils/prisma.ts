@@ -207,7 +207,7 @@ basePrisma.$use(async (params: Prisma.MiddlewareParams, next: (params: Prisma.Mi
                         args: {
                             data: {
                                 balanceID: balance.id,
-                                type: BalanceActionType.PAYOUT,
+                                type: BalanceActionType.PRIZE,
                                 amount: -payout,
                                 reference,
                             },

@@ -12,6 +12,9 @@ export interface ITicketController {
     export(req: Request, res: Response, next: NextFunction): Promise<void>;
     delete(req: Request, res: Response, next: NextFunction): Promise<void>;
     getRelayableTickets(req: Request, res: Response, next: NextFunction): Promise<void>;
+    exportRelayableGameTotals(req: Request, res: Response, next: NextFunction): Promise<void>;
+    exportRelayableBalanceSummary(req: Request, res: Response, next: NextFunction): Promise<void>;
+    exportRelayablePrizes(req: Request, res: Response, next: NextFunction): Promise<void>;
 }
 
 @injectable()
@@ -65,6 +68,73 @@ export class TicketController extends Controller implements ITicketController {
 
             res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
             res.setHeader('Content-Disposition', 'attachment; filename=tickets.xlsx');
+            res.send(buffer);
+        } catch (error: any) {
+            this.handleError(error, req, res);
+        }
+    }
+
+    public exportRelayableGameTotals = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+        try {
+            const ticketService = container.resolve<ITicketService>("TicketService");
+
+            const commitParam = (req.query.commit as string) || "false";
+            const commit = commitParam === 'true' || commitParam === '1';
+
+            const combineParam = (req.query.combine as string) || "false";
+            const combineAcrossGames = combineParam === 'true' || combineParam === '1';
+
+            const buffer = await ticketService.exportRelayableGameTotals(
+                req.query.start as string,
+                req.query.end as string,
+                commit,
+                combineAcrossGames
+            );
+
+            res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+            res.setHeader('Content-Disposition', `attachment; filename=relayable-game-totals-${req.query.start}-${req.query.end}.xlsx`);
+            res.send(buffer);
+        } catch (error: any) {
+            this.handleError(error, req, res);
+        }
+    }
+
+    public exportRelayableBalanceSummary = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+        try {
+            const ticketService = container.resolve<ITicketService>("TicketService");
+
+            const buffer = await ticketService.exportRelayableBalanceSummary(
+                req.query.start as string,
+                req.query.end as string
+            );
+
+            res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+            res.setHeader('Content-Disposition', `attachment; filename=relayable-saldo-${req.query.start}-${req.query.end}.xlsx`);
+            res.send(buffer);
+        } catch (error: any) {
+            this.handleError(error, req, res);
+        }
+    }
+
+    public exportRelayablePrizes = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+        try {
+            const ticketService = container.resolve<ITicketService>("TicketService");
+
+            const scopeParam = req.query.userID as string;
+            const scopeUserID = scopeParam ? Number(scopeParam) : undefined;
+            const parsedScope = scopeUserID && !Number.isNaN(scopeUserID) ? scopeUserID : undefined;
+
+            const buffer = await ticketService.exportRelayablePrizes(
+                req.query.start as string,
+                req.query.end as string,
+                req.query.prizeDate as string | undefined,
+                parsedScope
+            );
+
+            const filenameDate = (req.query.prizeDate as string) || (req.query.end as string) || (req.query.start as string);
+
+            res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+            res.setHeader('Content-Disposition', `attachment; filename=relayable-prijzen-${filenameDate}.xlsx`);
             res.send(buffer);
         } catch (error: any) {
             this.handleError(error, req, res);

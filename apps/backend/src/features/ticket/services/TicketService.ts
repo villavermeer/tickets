@@ -1,6 +1,6 @@
-import { Prisma, Ticket } from "@prisma/client";
+import { Prisma, Ticket, BalanceActionType, Role } from "@prisma/client";
 import Service from "../../../common/services/Service";
-import { injectable } from "tsyringe";
+import { injectable, container } from "tsyringe";
 import { CreateTicketRequest } from "../types/requests";
 import ValidationError from "../../../common/classes/errors/ValidationError";
 import { TicketMapper } from "../mappers/TicketMapper";
@@ -11,6 +11,7 @@ import { v4 } from "uuid";
 import { Context } from "../../../common/utils/context";
 import { DateTime } from "luxon";
 import PDFDocument from "pdfkit";
+import { IPrizeService } from "../../prize/services/PrizeService";
 
 export interface ITicketService {
     all(start: string, end: string, managerID?: string, runnerID?: string): Promise<TicketInterface[]>;
@@ -23,6 +24,9 @@ export interface ITicketService {
     getRelayableTickets(start: string, end: string, commit?: boolean, combineAcrossGames?: boolean): Promise<ChunkedRelayableTicket[]>;
     exportRelayableTickets(start: string, end: string, commit?: boolean, combineAcrossGames?: boolean): Promise<ExcelJS.Buffer>;
     exportRelayableTicketsPDF(start: string, end: string, commit?: boolean, compact?: boolean, combineAcrossGames?: boolean): Promise<Buffer>;
+    exportRelayableGameTotals(start: string, end: string, commit?: boolean, combineAcrossGames?: boolean): Promise<ExcelJS.Buffer>;
+    exportRelayableBalanceSummary(start: string, end: string): Promise<ExcelJS.Buffer>;
+    exportRelayablePrizes(start: string, end: string, prizeDate?: string, scopeUserID?: number): Promise<ExcelJS.Buffer>;
     delete(id: number): Promise<void>;
 }
 
@@ -672,6 +676,281 @@ export class TicketService extends Service implements ITicketService {
                 reject(err);
             }
         });
+    }
+
+    public exportRelayableGameTotals = async (start: string, end: string, commit?: boolean, combineAcrossGames?: boolean): Promise<ExcelJS.Buffer> => {
+        if (!start || !end) {
+            throw new ValidationError('Start- en einddatum zijn verplicht voor het exporteren van spel totalen.');
+        }
+
+        const relayableTickets = await this.getRelayableTickets(start, end, commit, combineAcrossGames);
+
+        const totalsMap = new Map<string, number>(); // key => aggregated cents
+
+        relayableTickets.forEach((chunk) => {
+            const gameLabel = chunk.gameCombination.join(' + ') || 'Onbekend spel';
+            chunk.entries.forEach((entry) => {
+                const key = `${gameLabel}||${entry.code}`;
+                const current = totalsMap.get(key) ?? 0;
+                totalsMap.set(key, current + entry.value);
+            });
+        });
+
+        const workbook = new ExcelJS.Workbook();
+        const worksheet = workbook.addWorksheet('Spel totalen');
+
+        worksheet.columns = [
+            { header: 'Omschrijving', key: 'description', width: 48 }
+        ];
+
+        if (!totalsMap.size) {
+            worksheet.addRow({ description: 'Geen gegevens gevonden voor de opgegeven periode.' });
+        } else {
+            const sortedEntries = Array.from(totalsMap.entries()).sort(([a], [b]) => a.localeCompare(b, 'nl'));
+            sortedEntries.forEach(([key, totalCents]) => {
+                const [gameLabel, code] = key.split('||');
+                const euroValue = (totalCents / 100).toFixed(2).replace('.', ',');
+                worksheet.addRow({
+                    description: `${gameLabel} ${code} €${euroValue}`
+                });
+            });
+        }
+
+        return workbook.xlsx.writeBuffer();
+    }
+
+    public exportRelayableBalanceSummary = async (start: string, end: string): Promise<ExcelJS.Buffer> => {
+        if (!start || !end) {
+            throw new ValidationError('Start- en einddatum zijn verplicht voor het exporteren van saldo gegevens.');
+        }
+
+        const startDate = this.parseDateParameter(start, true);
+        const endDate = this.parseDateParameter(end, false);
+
+        const actions = await this.db.balanceAction.findMany({
+            where: {
+                created: {
+                    gte: startDate,
+                    lte: endDate
+                },
+                balance: {
+                    user: {
+                        role: {
+                            in: [Role.RUNNER, Role.MANAGER]
+                        }
+                    }
+                }
+            },
+            include: {
+                balance: {
+                    select: {
+                        user: {
+                            select: {
+                                id: true,
+                                name: true,
+                                role: true
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        type BalanceRow = {
+            name: string;
+            role: Role;
+            inleg: number;
+            correctie: number;
+            uitbetaling: number;
+            prijs: number;
+        };
+
+        const byUser = new Map<number, BalanceRow>();
+
+        actions.forEach((action) => {
+            const user = action.balance?.user;
+            if (!user) {
+                return;
+            }
+
+            const entry = byUser.get(user.id) ?? {
+                name: user.name,
+                role: user.role,
+                inleg: 0,
+                correctie: 0,
+                uitbetaling: 0,
+                prijs: 0
+            };
+
+            switch (action.type) {
+                case BalanceActionType.TICKET_SALE:
+                    entry.inleg += action.amount;
+                    break;
+                case BalanceActionType.CORRECTION:
+                    entry.correctie += action.amount;
+                    break;
+                case BalanceActionType.PAYOUT:
+                    entry.uitbetaling += Math.abs(action.amount);
+                    break;
+                case BalanceActionType.PRIZE:
+                    entry.prijs += Math.abs(action.amount);
+                    break;
+            }
+
+            byUser.set(user.id, entry);
+        });
+
+        const workbook = new ExcelJS.Workbook();
+        const worksheet = workbook.addWorksheet('Saldo export');
+
+        const currencyFormat = '€ #,##0.00';
+
+        worksheet.columns = [
+            { header: 'Loper / Manager', key: 'name', width: 30 },
+            { header: 'Rol', key: 'role', width: 14 },
+            { header: 'Inleg (€)', key: 'inleg', width: 16, style: { numFmt: currencyFormat } },
+            { header: 'Correctie (€)', key: 'correctie', width: 16, style: { numFmt: currencyFormat } },
+            { header: 'Uitbetaling (€)', key: 'uitbetaling', width: 18, style: { numFmt: currencyFormat } },
+            { header: 'Prijs (€)', key: 'prijs', width: 16, style: { numFmt: currencyFormat } },
+        ];
+
+        const rows = Array.from(byUser.values()).sort((a, b) => a.name.localeCompare(b.name, 'nl'));
+
+        if (!rows.length) {
+            worksheet.addRow({ name: 'Geen saldo acties gevonden voor de opgegeven periode.' });
+        } else {
+            rows.forEach((row) => {
+                worksheet.addRow({
+                    name: row.name,
+                    role: row.role === Role.MANAGER ? 'Manager' : 'Loper',
+                    inleg: row.inleg / 100,
+                    correctie: row.correctie / 100,
+                    uitbetaling: row.uitbetaling / 100,
+                    prijs: row.prijs / 100
+                });
+            });
+
+            worksheet.addRow({});
+            worksheet.addRow({
+                name: 'Totaal',
+                role: '',
+                inleg: rows.reduce((sum, row) => sum + row.inleg, 0) / 100,
+                correctie: rows.reduce((sum, row) => sum + row.correctie, 0) / 100,
+                uitbetaling: rows.reduce((sum, row) => sum + row.uitbetaling, 0) / 100,
+                prijs: rows.reduce((sum, row) => sum + row.prijs, 0) / 100
+            });
+        }
+
+        return workbook.xlsx.writeBuffer();
+    }
+
+    public exportRelayablePrizes = async (start: string, end: string, prizeDate?: string, scopeUserID?: number): Promise<ExcelJS.Buffer> => {
+        const referenceDateParam = prizeDate || end || start;
+
+        if (!referenceDateParam) {
+            throw new ValidationError('Er is geen datum opgegeven voor de prijzen export.');
+        }
+
+        const prizeService = container.resolve<IPrizeService>("PrizeService");
+        const targetDate = this.parseDateParameter(referenceDateParam, true);
+
+        const pageSize = 200;
+        let page = 1;
+        let hasMore = true;
+
+        type PrizeRow = {
+            game: string;
+            runner: string;
+            manager: string;
+            customer: string;
+            code: string;
+            order: string | number;
+            stake: number;
+            prize: number;
+        };
+
+        const rows: PrizeRow[] = [];
+
+        while (hasMore) {
+            const report = await prizeService.getPrizesByDate(
+                targetDate,
+                scopeUserID,
+                page,
+                pageSize
+            );
+
+            report.groups.forEach(group => {
+                group.tickets.forEach(ticket => {
+                    const runnerLabel = ticket.runnerName || (ticket.managerName ? 'Manager zelf' : '-');
+
+                    ticket.codes.forEach(codeEntry => {
+                        if (!codeEntry || codeEntry.value <= 0) {
+                            return;
+                        }
+
+                        const stakeValue = (codeEntry as any).stake ?? 0;
+
+                        rows.push({
+                            game: group.game.name,
+                            runner: runnerLabel,
+                            manager: ticket.managerName || '-',
+                            customer: ticket.name || '-',
+                            code: codeEntry.code,
+                            order: codeEntry.raffleOrder ?? '-',
+                            stake: stakeValue / 100,
+                            prize: codeEntry.value / 100
+                        });
+                    });
+                });
+            });
+
+            hasMore = report.hasMore;
+            page += 1;
+        }
+
+        const workbook = new ExcelJS.Workbook();
+        const worksheet = workbook.addWorksheet('Prijzen');
+
+        const currencyFormat = '€ #,##0.00';
+
+        worksheet.columns = [
+            { header: 'Spel', key: 'game', width: 18 },
+            { header: 'Loper', key: 'runner', width: 20 },
+            { header: 'Manager', key: 'manager', width: 20 },
+            { header: 'Klant', key: 'customer', width: 24 },
+            { header: 'Nummer', key: 'code', width: 12 },
+            { header: 'Regel', key: 'order', width: 10 },
+            { header: 'Inleg (€)', key: 'stake', width: 14, style: { numFmt: currencyFormat } },
+            { header: 'Prijs (€)', key: 'prize', width: 14, style: { numFmt: currencyFormat } },
+        ];
+
+        if (!rows.length) {
+            worksheet.addRow({ game: 'Geen prijzen gevonden binnen de selectie.' });
+        } else {
+            rows
+                .sort((a, b) => {
+                    const gameCompare = a.game.localeCompare(b.game, 'nl');
+                    if (gameCompare !== 0) return gameCompare;
+                    return a.code.localeCompare(b.code, 'nl');
+                })
+                .forEach(row => {
+                    worksheet.addRow(row);
+                });
+
+            worksheet.addRow({});
+            worksheet.addRow({
+                game: 'Totaal',
+                runner: '',
+                manager: '',
+                customer: '',
+                code: '',
+                order: '',
+                stake: rows.reduce((sum, row) => sum + row.stake, 0),
+                prize: rows.reduce((sum, row) => sum + row.prize, 0)
+            });
+        }
+
+        return workbook.xlsx.writeBuffer();
     }
 
     public delete = async (id: number): Promise<void> => {

@@ -175,5 +175,6 @@ enum GameExpiry {
 enum BalanceActionType {
   PAYOUT
   CORRECTION
+  PRIZE
   TICKET_SALE
 }

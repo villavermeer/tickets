@@ -1,6 +1,7 @@
 export enum BalanceActionType {
   PAYOUT = "PAYOUT",
   CORRECTION = "CORRECTION",
+  PRIZE = "PRIZE",
   TICKET_SALE = "TICKET_SALE"
 }
 
