@@ -585,21 +585,50 @@ export class TicketService extends Service implements ITicketService {
                 const usableWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
                 const bottomLimit = doc.page.height - doc.page.margins.bottom;
                 const rowHeight = 22;
-                const columnWidths = [Math.floor(usableWidth * 0.6), Math.ceil(usableWidth * 0.4)];
+                
+                // Calculate column widths based on actual text content
+                const calculateColumnWidths = () => {
+                    let maxCodeWidth = 0;
+                    let maxAmountWidth = 0;
+                    
+                    relayableTickets.forEach(chunk => {
+                        chunk.entries.forEach(entry => {
+                            // Estimate text width: approximately 6 pixels per character for Helvetica 11pt
+                            const codeTextWidth = entry.code.length * 6;
+                            const amountTextWidth = (entry.final / 100).toFixed(2).length * 6;
+                            maxCodeWidth = Math.max(maxCodeWidth, codeTextWidth);
+                            maxAmountWidth = Math.max(maxAmountWidth, amountTextWidth);
+                        });
+                    });
+                    
+                    // Add padding (16px on each side) and ensure minimum widths
+                    const minCodeWidth = 50; // Minimum width for "Code" header
+                    const minAmountWidth = 50; // Minimum width for "Bedrag" header and amounts
+                    
+                    const codeWidth = Math.max(maxCodeWidth + 32, minCodeWidth);
+                    const amountWidth = Math.max(maxAmountWidth + 32, minAmountWidth);
+                    
+                    return { codeWidth, amountWidth };
+                };
+                
+                const { codeWidth: codeColumnWidth, amountWidth: amountColumnWidth } = calculateColumnWidths();
+                const columnWidths = [codeColumnWidth, amountColumnWidth];
+                const tableWidth = codeColumnWidth + amountColumnWidth;
                 const generatedStamp = new Date().toLocaleString('nl-NL', { timeZone: 'Europe/Amsterdam' });
 
                 const renderReportHeader = (subtitle?: string) => {
                     doc.fillColor('#000000');
                     if (subtitle) {
-               
-                        doc.font('Helvetica-Bold').fontSize(14).text(subtitle, left, doc.y, { width: usableWidth });
+                        // Calculate a more compact width for the subtitle (max 60% of usable width)
+                        const maxSubtitleWidth = Math.min(usableWidth * 0.6, 300);
+                        doc.font('Helvetica-Bold').fontSize(10).text(subtitle, left, doc.y, { width: maxSubtitleWidth });
                     }
                     doc.moveDown(0.6);
                 };
 
                 const drawTableHeader = (y: number) => {
                     doc.save();
-                    doc.rect(left, y, usableWidth, rowHeight).fill('#f2f4f7');
+                    doc.rect(left, y, tableWidth, rowHeight).fill('#f2f4f7');
                     doc.fillColor('#000000');
                     doc.font('Helvetica-Bold').fontSize(11)
                         .text('Code', left + 8, y + 6, { width: columnWidths[0] - 16 });
@@ -610,12 +639,22 @@ export class TicketService extends Service implements ITicketService {
                 const drawTableRow = (entry: RelayableTicketEntry, y: number, isStriped: boolean) => {
                     doc.save();
                     if (isStriped) {
-                        doc.rect(left, y, usableWidth, rowHeight).fill('#fbfcfe');
+                        doc.rect(left, y, tableWidth, rowHeight).fill('#fbfcfe');
                     }
                     doc.fillColor('#000000');
                     doc.font('Helvetica').fontSize(11)
                         .text(entry.code, left + 8, y + 6, { width: columnWidths[0] - 16 });
                     doc.text((entry.final / 100).toFixed(2), left + columnWidths[0], y + 6, { width: columnWidths[1] - 16, align: 'right' });
+                    doc.restore();
+                };
+
+                const drawTotalRow = (total: number, y: number) => {
+                    doc.save();
+                    doc.rect(left, y, tableWidth, rowHeight).fill('#e8ebed');
+                    doc.fillColor('#000000');
+                    doc.font('Helvetica-Bold').fontSize(11)
+                        .text('Totaal', left + 8, y + 6, { width: columnWidths[0] - 16 });
+                    doc.text((total / 100).toFixed(2), left + columnWidths[0], y + 6, { width: columnWidths[1] - 16, align: 'right' });
                     doc.restore();
                 };
 
@@ -625,12 +664,27 @@ export class TicketService extends Service implements ITicketService {
                     return;
                 }
 
+                // Separate Super 4 and non-Super 4 tickets
+                const super4Chunks: ChunkedRelayableTicket[] = [];
+                const nonSuper4Chunks: ChunkedRelayableTicket[] = [];
+                
+                relayableTickets.forEach(chunk => {
+                    const isSuper4 = chunk.gameCombination.length === 1 && chunk.gameCombination[0] === 'Super 4';
+                    if (isSuper4) {
+                        super4Chunks.push(chunk);
+                    } else {
+                        nonSuper4Chunks.push(chunk);
+                    }
+                });
+
                 let isFirstPage = true;
 
-                relayableTickets.forEach((chunk, chunkIndex) => {
+                // Process all non-Super4 games first
+                nonSuper4Chunks.forEach((chunk, chunkIndex) => {
                     let entryIndex = 0;
                     let pageForChunk = 0;
                     const combinationTitle = `${chunk.gameCombination.join(', ')}`;
+                    const chunkTotal = chunk.entries.reduce((sum, entry) => sum + entry.final, 0);
 
                     while (entryIndex < chunk.entries.length || pageForChunk === 0) {
                         if (!isFirstPage) {
@@ -657,7 +711,19 @@ export class TicketService extends Service implements ITicketService {
                             entryIndex++;
                         }
 
+                        // Add total row after all entries are rendered
                         if (entryIndex >= chunk.entries.length) {
+                            // Check if we have room for the total row
+                            if (y + rowHeight > bottomLimit) {
+                                doc.addPage();
+                                renderReportHeader(`${combinationTitle} (vervolg)`);
+                                y = doc.y;
+                                drawTableHeader(y);
+                                y += rowHeight;
+                            }
+                            drawTotalRow(chunkTotal, y);
+                            y += rowHeight;
+
                             if (y + 24 > bottomLimit) {
                                 doc.addPage();
                                 renderReportHeader(`${combinationTitle} (vervolg)`);
@@ -670,6 +736,63 @@ export class TicketService extends Service implements ITicketService {
                         pageForChunk++;
                     }
                 });
+
+                // Now process all Super 4 games in a single combined table at the end
+                if (super4Chunks.length > 0) {
+                    // Combine all Super 4 entries into one array
+                    const allSuper4Entries: RelayableTicketEntry[] = [];
+                    super4Chunks.forEach(chunk => {
+                        allSuper4Entries.push(...chunk.entries);
+                    });
+
+                    const super4Total = allSuper4Entries.reduce((sum, entry) => sum + entry.final, 0);
+                    const combinationTitle = 'Super 4';
+
+                    let entryIndex = 0;
+                    let pageForSuper4 = 0;
+
+                    while (entryIndex < allSuper4Entries.length || pageForSuper4 === 0) {
+                        if (!isFirstPage) {
+                            doc.addPage();
+                        }
+                        isFirstPage = false;
+
+                        const subtitle = pageForSuper4 > 0 ? `${combinationTitle} (vervolg)` : combinationTitle;
+                        renderReportHeader(subtitle);
+
+                        let y = doc.y;
+                        drawTableHeader(y);
+                        y += rowHeight;
+
+                        let stripe = false;
+                        while (entryIndex < allSuper4Entries.length) {
+                            if (y + rowHeight > bottomLimit) {
+                                break;
+                            }
+                            const entry = allSuper4Entries[entryIndex];
+                            drawTableRow(entry, y, stripe);
+                            stripe = !stripe;
+                            y += rowHeight;
+                            entryIndex++;
+                        }
+
+                        // Add total row after all entries are rendered
+                        if (entryIndex >= allSuper4Entries.length) {
+                            // Check if we have room for the total row
+                            if (y + rowHeight > bottomLimit) {
+                                doc.addPage();
+                                renderReportHeader(`${combinationTitle} (vervolg)`);
+                                y = doc.y;
+                                drawTableHeader(y);
+                                y += rowHeight;
+                            }
+                            drawTotalRow(super4Total, y);
+                            y += rowHeight;
+                        }
+
+                        pageForSuper4++;
+                    }
+                }
 
                 doc.end();
             } catch (err) {
@@ -727,6 +850,27 @@ export class TicketService extends Service implements ITicketService {
         const startDate = this.parseDateParameter(start, true);
         const endDate = this.parseDateParameter(end, false);
 
+        // Get all users (runners and managers) with their balance info
+        const users = await this.db.user.findMany({
+            where: {
+                role: {
+                    in: [Role.RUNNER, Role.MANAGER]
+                }
+            },
+            select: {
+                id: true,
+                name: true,
+                role: true,
+                commission: true,
+                balance: {
+                    select: {
+                        balance: true
+                    }
+                }
+            }
+        });
+
+        // Get all balance actions within the period
         const actions = await this.db.balanceAction.findMany({
             where: {
                 created: {
@@ -744,13 +888,30 @@ export class TicketService extends Service implements ITicketService {
             include: {
                 balance: {
                     select: {
-                        user: {
-                            select: {
-                                id: true,
-                                name: true,
-                                role: true
-                            }
-                        }
+                        userID: true
+                    }
+                }
+            }
+        });
+
+        // Get tickets for commission calculation
+        const tickets = await this.db.ticket.findMany({
+            where: {
+                created: {
+                    gte: startDate,
+                    lte: endDate
+                }
+            },
+            select: {
+                creatorID: true,
+                codes: {
+                    select: {
+                        value: true
+                    }
+                },
+                games: {
+                    select: {
+                        gameID: true
                     }
                 }
             }
@@ -759,28 +920,80 @@ export class TicketService extends Service implements ITicketService {
         type BalanceRow = {
             name: string;
             role: Role;
+            vorigSaldo: number;
             inleg: number;
             correctie: number;
             uitbetaling: number;
             prijs: number;
+            provisie: number;
+            eindSaldo: number;
         };
 
         const byUser = new Map<number, BalanceRow>();
 
-        actions.forEach((action) => {
-            const user = action.balance?.user;
-            if (!user) {
-                return;
-            }
-
-            const entry = byUser.get(user.id) ?? {
+        // Initialize rows for all users with their previous balance
+        users.forEach((user) => {
+            // Get actions before the start date to calculate previous balance
+            const currentBalance = user.balance?.balance ?? 0;
+            
+            byUser.set(user.id, {
                 name: user.name,
                 role: user.role,
+                vorigSaldo: 0, // Will be calculated
                 inleg: 0,
                 correctie: 0,
                 uitbetaling: 0,
-                prijs: 0
-            };
+                prijs: 0,
+                provisie: 0,
+                eindSaldo: 0
+            });
+        });
+
+        // Calculate previous balance for each user (balance before the period)
+        for (const [userId, row] of byUser) {
+            const actionsBeforePeriod = await this.db.balanceAction.findMany({
+                where: {
+                    created: {
+                        lt: startDate
+                    },
+                    balance: {
+                        userID: userId
+                    }
+                }
+            });
+
+            let previousBalance = 0;
+            actionsBeforePeriod.forEach((action) => {
+                switch (action.type) {
+                    case BalanceActionType.TICKET_SALE:
+                        previousBalance += action.amount;
+                        break;
+                    case BalanceActionType.CORRECTION:
+                        previousBalance += action.amount;
+                        break;
+                    case BalanceActionType.PAYOUT:
+                        previousBalance += action.amount; // Already negative
+                        break;
+                    case BalanceActionType.PRIZE:
+                        previousBalance += action.amount; // Already negative
+                        break;
+                }
+            });
+
+            row.vorigSaldo = previousBalance;
+        }
+
+        // Process actions within the period
+        actions.forEach((action) => {
+            const userId = action.balance?.userID;
+            if (!userId) {
+                return;
+            }
+
+            const entry = byUser.get(userId);
+            if (!entry) {
+                return;
+            }
 
             switch (action.type) {
                 case BalanceActionType.TICKET_SALE:
@@ -796,8 +1009,27 @@ export class TicketService extends Service implements ITicketService {
                     entry.prijs += Math.abs(action.amount);
                     break;
             }
+        });
 
-            byUser.set(user.id, entry);
+        // Calculate commission (provisie) for each user based on their tickets
+        const userCommissionMap = new Map(users.map(u => [u.id, u.commission]));
+        tickets.forEach((ticket) => {
+            const entry = byUser.get(ticket.creatorID);
+            if (!entry) {
+                return;
+            }
+
+            const commission = userCommissionMap.get(ticket.creatorID) ?? 0;
+            const gameCount = ticket.games.length;
+            const totalValue = ticket.codes.reduce((sum, code) => sum + (code.value * gameCount), 0);
+            const provisie = (totalValue * commission) / 100;
+
+            entry.provisie += provisie;
+        });
+
+        // Calculate end balance using the formula: (Vorig saldo - correctie - Uitbetaling) + inleg - prijzen - provisie = eind saldo
+        byUser.forEach((row) => {
+            row.eindSaldo = (row.vorigSaldo - row.correctie - row.uitbetaling) + row.inleg - row.prijs - row.provisie;
         });
 
         const workbook = new ExcelJS.Workbook();
@@ -808,13 +1040,18 @@ export class TicketService extends Service implements ITicketService {
         worksheet.columns = [
             { header: 'Loper / Manager', key: 'name', width: 30 },
             { header: 'Rol', key: 'role', width: 14 },
+            { header: 'Vorig saldo (€)', key: 'vorigSaldo', width: 18, style: { numFmt: currencyFormat } },
             { header: 'Inleg (€)', key: 'inleg', width: 16, style: { numFmt: currencyFormat } },
             { header: 'Correctie (€)', key: 'correctie', width: 16, style: { numFmt: currencyFormat } },
             { header: 'Uitbetaling (€)', key: 'uitbetaling', width: 18, style: { numFmt: currencyFormat } },
-            { header: 'Prijs (€)', key: 'prijs', width: 16, style: { numFmt: currencyFormat } },
+            { header: 'Prijzen (€)', key: 'prijs', width: 16, style: { numFmt: currencyFormat } },
+            { header: 'Provisie (€)', key: 'provisie', width: 16, style: { numFmt: currencyFormat } },
+            { header: 'Eind saldo (€)', key: 'eindSaldo', width: 18, style: { numFmt: currencyFormat } },
         ];
 
-        const rows = Array.from(byUser.values()).sort((a, b) => a.name.localeCompare(b.name, 'nl'));
+        const rows = Array.from(byUser.values())
+            .filter(row => row.inleg !== 0 || row.correctie !== 0 || row.uitbetaling !== 0 || row.prijs !== 0 || row.vorigSaldo !== 0)
+            .sort((a, b) => a.name.localeCompare(b.name, 'nl'));
 
         if (!rows.length) {
             worksheet.addRow({ name: 'Geen saldo acties gevonden voor de opgegeven periode.' });
@@ -823,10 +1060,13 @@ export class TicketService extends Service implements ITicketService {
                 worksheet.addRow({
                     name: row.name,
                     role: row.role === Role.MANAGER ? 'Manager' : 'Loper',
+                    vorigSaldo: row.vorigSaldo / 100,
                     inleg: row.inleg / 100,
                     correctie: row.correctie / 100,
                     uitbetaling: row.uitbetaling / 100,
-                    prijs: row.prijs / 100
+                    prijs: row.prijs / 100,
+                    provisie: row.provisie / 100,
+                    eindSaldo: row.eindSaldo / 100
                 });
             });
 
@@ -834,10 +1074,13 @@ export class TicketService extends Service implements ITicketService {
             worksheet.addRow({
                 name: 'Totaal',
                 role: '',
+                vorigSaldo: rows.reduce((sum, row) => sum + row.vorigSaldo, 0) / 100,
                 inleg: rows.reduce((sum, row) => sum + row.inleg, 0) / 100,
                 correctie: rows.reduce((sum, row) => sum + row.correctie, 0) / 100,
                 uitbetaling: rows.reduce((sum, row) => sum + row.uitbetaling, 0) / 100,
-                prijs: rows.reduce((sum, row) => sum + row.prijs, 0) / 100
+                prijs: rows.reduce((sum, row) => sum + row.prijs, 0) / 100,
+                provisie: rows.reduce((sum, row) => sum + row.provisie, 0) / 100,
+                eindSaldo: rows.reduce((sum, row) => sum + row.eindSaldo, 0) / 100
             });
         }
 
@@ -1078,11 +1321,24 @@ export class TicketService extends Service implements ITicketService {
             return results;
         }
 
-        // Combine across games by (code, per-game final). We sum value/deduction across games
+        // Separate Super 4 chunks from other game chunks
+        const super4Results: ChunkedRelayableTicket[] = [];
+        const nonSuper4Results: ChunkedRelayableTicket[] = [];
+        
+        results.forEach(chunk => {
+            const isSuper4 = chunk.gameCombination.length === 1 && chunk.gameCombination[0] === 'Super 4';
+            if (isSuper4) {
+                super4Results.push(chunk);
+            } else {
+                nonSuper4Results.push(chunk);
+            }
+        });
+
+        // Combine across games ONLY for non-Super4 games by (code, per-game final). We sum value/deduction across games
         // but keep the per-game final amount unchanged by grouping on it.
         type EntryAgg = { code: string; codeLength: number; final: number; valueSum: number; deductionSum: number; games: Set<string> };
         const byCodeFinal = new Map<string, Map<number, EntryAgg>>();
-        results.forEach(chunk => {
+        nonSuper4Results.forEach(chunk => {
             chunk.entries.forEach((e: RelayableTicketEntry) => {
                 const code = e.code;
                 const finalKey = e.final; // cents
@@ -1117,7 +1373,7 @@ export class TicketService extends Service implements ITicketService {
             }
         }
 
-        // Emit one chunk per game-list with multiple code rows
+        // Emit one chunk per game-list with multiple code rows for non-Super4 games
         const combinedChunks: ChunkedRelayableTicket[] = Array.from(groupsByGames.values()).map(g => ({
             gameCombination: g.gameList,
             codes: g.entries.map(e => e.code),
@@ -1128,7 +1384,10 @@ export class TicketService extends Service implements ITicketService {
             entries: g.entries
         }));
 
-        return _.sortBy(combinedChunks, c => c.gameCombination.join('|'));
+        // Combine non-Super4 chunks and Super4 chunks, keeping Super4 separate
+        const allChunks = [...combinedChunks, ...super4Results];
+        
+        return _.sortBy(allChunks, c => c.gameCombination.join('|'));
     }
 
     // Build chunks but compute per-code incremental values for the selected window by
