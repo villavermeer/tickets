@@ -4,6 +4,8 @@ import { container, injectable } from "tsyringe";
 import { formatMutationResponse, formatSuccessResponse } from "../../../common/utils/responses";
 import { ITicketService } from "../services/TicketService";
 import ValidationError from "../../../common/classes/errors/ValidationError";
+import UnauthorizedError from "../../../common/classes/errors/UnauthorizedError";
+import { Context } from "../../../common/utils/context";
 
 export interface ITicketController {
     all(req: Request, res: Response, next: NextFunction): Promise<void>;
@@ -19,6 +21,17 @@ export interface ITicketController {
 
 @injectable()
 export class TicketController extends Controller implements ITicketController {
+
+    /**
+     * Check if the current user is authorized for relay operations (user ID 58)
+     * @throws UnauthorizedError if user is not authorized
+     */
+    private checkRelayAuthorization(): void {
+        const authID = Context.get('authID');
+        if (authID !== 58) {
+            throw new UnauthorizedError('Deze functionaliteit is alleen beschikbaar voor geautoriseerde gebruikers');
+        }
+    }
 
     public all = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
         try {
@@ -76,6 +89,9 @@ export class TicketController extends Controller implements ITicketController {
 
     public exportRelayableGameTotals = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
         try {
+            // Check if user is authorized for relay operations
+            this.checkRelayAuthorization();
+
             const ticketService = container.resolve<ITicketService>("TicketService");
 
             const commitParam = (req.query.commit as string) || "false";
@@ -188,6 +204,11 @@ export class TicketController extends Controller implements ITicketController {
             const compact = compactParam === 'true' || compactParam === '1';
             const combineParam = (req.query.combine as string) || "false";
             const combineAcrossGames = combineParam === 'true' || combineParam === '1';
+
+            // Check authorization for PDF and Excel exports (relay ticket exports)
+            if (shouldExportPDF || shouldExport) {
+                this.checkRelayAuthorization();
+            }
 
             if (shouldExportPDF) {
                 // Return PDF file
