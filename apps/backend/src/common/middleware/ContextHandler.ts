@@ -11,9 +11,14 @@ const ContextHandler = (req: Request, res: Response, next: NextFunction) => {
 
         const authHeader = req.headers["authorization"];
 
-        const token = authHeader
+        let token = authHeader
             ? authHeader
             : null;
+
+        // Remove "Bearer " prefix if present
+        if (token && token.startsWith("Bearer ")) {
+            token = token.slice(7);
+        }
 
         let authID = 0;
 

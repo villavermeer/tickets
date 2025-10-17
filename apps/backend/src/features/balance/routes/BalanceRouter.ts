@@ -46,19 +46,17 @@ export class BalanceRouter implements IBalanceRouter {
             balanceController.getBalanceHistory
         );
         
-        // Process payout (admins only)
+        // Process payout (admins and managers)
         this.router.post(
             "/:userID/payout",
             Authorized,
-            HasRole(Role.ADMIN),
             balanceController.processPayout
         );
         
-        // Process correction (admins only)
+        // Process correction (admins and managers)
         this.router.post(
             "/:userID/correction",
             Authorized,
-            HasRole(Role.ADMIN),
             balanceController.processCorrection
         );
             
@@ -68,6 +66,22 @@ export class BalanceRouter implements IBalanceRouter {
             Authorized,
             HasRole(Role.ADMIN),
             balanceController.addBalanceAction
+        );
+        
+        // Update balance action (admins only)
+        this.router.put(
+            "/action/:actionID",
+            Authorized,
+            HasRole(Role.ADMIN),
+            balanceController.updateBalanceAction
+        );
+        
+        // Delete balance action (admins only)
+        this.router.delete(
+            "/action/:actionID",
+            Authorized,
+            HasRole(Role.ADMIN),
+            balanceController.deleteBalanceAction
         );
     }
 

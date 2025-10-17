@@ -15,6 +15,8 @@ export interface IBalanceController {
     processPayout(req: Request, res: Response): Promise<void>;
     processCorrection(req: Request, res: Response): Promise<void>;
     addBalanceAction(req: Request, res: Response): Promise<void>;
+    updateBalanceAction(req: Request, res: Response): Promise<void>;
+    deleteBalanceAction(req: Request, res: Response): Promise<void>;
 }
 
 @injectable()
@@ -107,9 +109,9 @@ export class BalanceController extends Controller implements IBalanceController 
     public processPayout = async (req: Request, res: Response): Promise<void> => {
         try {
             const userID = parseInt(req.params.userID);
-            const { amount, reference } = req.body;
+            const { amount, reference, created } = req.body;
 
-            if (!amount || amount <= 0) {
+            if (!amount || amount === 0) {
                 throw new ValidationError("Valid payout amount is required");
             }
 
@@ -127,7 +129,7 @@ export class BalanceController extends Controller implements IBalanceController 
                 }
             }
 
-            const payout = await this.balanceService.processPayout(userID, amount, reference);
+            const payout = await this.balanceService.processPayout(userID, amount, reference, created);
             res.status(200).json(formatSuccessResponse('Payout', payout));
         } catch (error) {
             this.handleError(error, req, res);
@@ -137,7 +139,9 @@ export class BalanceController extends Controller implements IBalanceController 
     public processCorrection = async (req: Request, res: Response): Promise<void> => {
         try {
             const userID = parseInt(req.params.userID);
-            const { amount, reference } = req.body;
+            const { amount, reference, created } = req.body;
+
+            console.log(JSON.stringify({ amount, reference, created }, null, 2));
 
             if (!amount || amount === 0) {
                 throw new ValidationError("Valid correction amount is required");
@@ -153,9 +157,11 @@ export class BalanceController extends Controller implements IBalanceController 
                 }
             }
 
-            const correction = await this.balanceService.processCorrection(userID, amount, reference);
+            const correction = await this.balanceService.processCorrection(userID, amount, reference, created);
             res.status(200).json(formatSuccessResponse('Correction', correction));
         } catch (error) {
+            console.log(JSON.stringify(error, null, 2));
+            console.error('Error processing correction:', error);
             this.handleError(error, req, res);
         }
     };
@@ -201,6 +207,39 @@ export class BalanceController extends Controller implements IBalanceController 
         });
         return !!relation || managerID === userID; // allow manager to view own balance
     }
+
+    public updateBalanceAction = async (req: Request, res: Response): Promise<void> => {
+        try {
+            const actionID = parseInt(req.params.actionID);
+            const { type, amount, reference, created } = req.body;
+
+            if (!type && !amount && reference === undefined && !created) {
+                throw new ValidationError("At least one field must be provided for update");
+            }
+
+            const action = await this.balanceService.updateBalanceAction(actionID, {
+                type,
+                amount,
+                reference,
+                created: created ? new Date(created) : undefined,
+            });
+            
+            res.status(200).json(formatSuccessResponse('BalanceAction', action));
+        } catch (error) {
+            this.handleError(error, req, res);
+        }
+    };
+
+    public deleteBalanceAction = async (req: Request, res: Response): Promise<void> => {
+        try {
+            const actionID = parseInt(req.params.actionID);
+
+            await this.balanceService.deleteBalanceAction(actionID);
+            res.status(200).json(formatSuccessResponse('Message', { message: 'Balance action deleted successfully' }));
+        } catch (error) {
+            this.handleError(error, req, res);
+        }
+    };
 }
 
 BalanceController.register("BalanceController");

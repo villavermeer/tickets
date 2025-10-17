@@ -132,8 +132,8 @@ export class PrizeService extends Service implements IPrizeService {
         const amsterdamDate = DateTime.fromJSDate(date).setZone('Europe/Amsterdam');
         const raffleDayStartUTC = amsterdamDate.startOf('day').toUTC().toJSDate();
         const raffleDayEndUTC = amsterdamDate.endOf('day').toUTC().toJSDate();
-        const ticketDayStartUTC = amsterdamDate.minus({ days: 1 }).startOf('day').toUTC().toJSDate();
-        const ticketDayEndUTC = amsterdamDate.minus({ days: 1 }).endOf('day').toUTC().toJSDate();
+        const ticketDayStartUTC = amsterdamDate.startOf('day').toUTC().toJSDate();
+        const ticketDayEndUTC = amsterdamDate.endOf('day').toUTC().toJSDate();
 
         // Determine user scope for filtering tickets
         let scopedUserIDs: number[] | undefined;

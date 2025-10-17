@@ -29,7 +29,7 @@ export class TicketController extends Controller implements ITicketController {
     private checkRelayAuthorization(): void {
         const authID = Context.get('authID');
         if (authID !== 58) {
-            throw new UnauthorizedError('Deze functionaliteit is alleen beschikbaar voor geautoriseerde gebruikers');
+            throw new UnauthorizedError();
         }
     }
 

@@ -138,7 +138,9 @@ export class RevenueService extends Service implements IRevenueService {
             },
         }) as TicketWithRelations[];
 
-        const filterIDs = includeRunners ? await this.getRunnersUnderManager(managerID) : [managerID];
+        const filterIDs = includeRunners 
+            ? [managerID, ...await this.getRunnersUnderManager(managerID)]
+            : [managerID];
 
         const filtered = tickets.filter(t => filterIDs.includes(t.creator.id));
 

@@ -9,10 +9,12 @@ import EntityNotFoundError from "../../../common/classes/errors/EntityNotFoundEr
 export interface IBalanceService {
     getUserBalance(userID: number): Promise<BalanceWithActions>;
     addBalanceAction(userID: number, action: CreateBalanceActionRequest): Promise<BalanceAction>;
-    processPayout(userID: number, amount: number, reference?: string): Promise<BalanceAction>;
-    processCorrection(userID: number, amount: number, reference?: string): Promise<BalanceAction>;
+    processPayout(userID: number, amount: number, reference?: string, created?: Date): Promise<BalanceAction>;
+    processCorrection(userID: number, amount: number, reference?: string, created?: Date): Promise<BalanceAction>;
     getBalanceActions(userID: number, limit?: number, offset?: number): Promise<BalanceAction[]>;
     getBalanceHistory(userID: number, startDate?: Date, endDate?: Date): Promise<BalanceAction[]>;
+    updateBalanceAction(actionID: number, updates: Partial<CreateBalanceActionRequest>): Promise<BalanceAction>;
+    deleteBalanceAction(actionID: number): Promise<void>;
 }
 
 export interface CreateBalanceActionRequest {
@@ -108,48 +110,58 @@ export class BalanceService extends Service implements IBalanceService {
         return this.formatBalanceAction(balanceAction);
     }
 
-    public async processPayout(userID: number, amount: number, reference?: string): Promise<BalanceAction> {
-        if (amount <= 0) {
-            throw new ValidationError("Payout amount must be positive");
-        }
+    public async processPayout(userID: number, amount: number, reference?: string, created?: Date): Promise<BalanceAction> {
+        // Allow both positive and negative payouts
+        // Positive payout = money going out (decrease balance)
+        // Negative payout = money coming in (increase balance)
+        const payoutAmount = amount > 0 ? -amount : amount;
 
         const balance = await this.db.balance.findUnique({
             where: { userID }
         });
 
-        if (!balance || balance.balance < amount) {
+        if (!balance) {
+            throw new ValidationError("User balance not found");
+        }
+
+        // Check if payout would result in negative balance (only for positive payouts)
+        if (amount > 0 && balance.balance < amount) {
             throw new ValidationError("Insufficient balance for payout");
         }
 
         return await this.addBalanceAction(userID, {
             type: BalanceActionType.PAYOUT,
-            amount: -amount, // Negative for payouts
-            reference
+            amount: payoutAmount,
+            reference,
+            created: created ? new Date(created) : undefined,
         });
     }
 
-    public async processCorrection(userID: number, amount: number, reference?: string): Promise<BalanceAction> {
-        // Correction should set balance to this amount (absolute), not add/deduct
-        // Fetch current balance or create one
+    public async processCorrection(userID: number, amount: number, reference?: string, created?: Date): Promise<BalanceAction> {
+        // Correction should add/subtract from balance, not set to absolute amount
+        // Get or create balance
         let balance = await this.db.balance.findUnique({ where: { userID } });
         if (!balance) {
             balance = await this.createInitialBalanceRecord(userID);
         }
 
-        const delta = amount - balance.balance; // set-to amount
-
+        // Create balance action with the correction amount (can be positive or negative)
         const balanceAction = await this.db.balanceAction.create({
             data: {
                 balanceID: balance.id,
                 type: BalanceActionType.CORRECTION,
-                amount: delta,
-                reference
+                amount: amount, // amount can be positive or negative
+                reference,
+                created: created ? new Date(created) : undefined,
             }
         });
 
+        // Update balance by adding the correction amount
         await this.db.balance.update({
             where: { id: balance.id },
-            data: { balance: amount }
+            data: { 
+                balance: { increment: amount }
+            }
         });
 
         return this.formatBalanceAction(balanceAction);
@@ -185,6 +197,93 @@ export class BalanceService extends Service implements IBalanceService {
         });
 
         return actions.map(action => this.formatBalanceAction(action));
+    }
+
+    public async updateBalanceAction(actionID: number, updates: Partial<CreateBalanceActionRequest>): Promise<BalanceAction> {
+        const requestUser = Context.get("user");
+        
+        // Get the existing action
+        const existingAction = await this.db.balanceAction.findUnique({
+            where: { id: actionID },
+            include: { balance: true }
+        });
+
+        if (!existingAction) {
+            throw new EntityNotFoundError("Balance action not found");
+        }
+
+        // Validate user permissions
+        if (requestUser.role === Role.RUNNER && requestUser.id !== existingAction.balance.userID) {
+            throw new ValidationError("Runners can only manage their own balance actions");
+        }
+
+        if (requestUser.role === Role.MANAGER) {
+            const isUnderManager = await this.isUserUnderManager(requestUser.id, existingAction.balance.userID);
+            if (!isUnderManager) {
+                throw new ValidationError("You can only manage balance actions of users under your management");
+            }
+        }
+
+        // Calculate the difference in amount to adjust the balance
+        const amountDifference = (updates.amount || existingAction.amount) - existingAction.amount;
+
+        // Update the action
+        const updatedAction = await this.db.balanceAction.update({
+            where: { id: actionID },
+            data: {
+                type: updates.type || existingAction.type,
+                amount: updates.amount || existingAction.amount,
+                reference: updates.reference !== undefined ? updates.reference : existingAction.reference,
+                created: updates.created ? new Date(updates.created) : existingAction.created,
+            }
+        });
+
+        // Update the balance to reflect the amount difference
+        if (amountDifference !== 0) {
+            await this.db.balance.update({
+                where: { id: existingAction.balanceID },
+                data: { balance: { increment: amountDifference } }
+            });
+        }
+
+        return this.formatBalanceAction(updatedAction);
+    }
+
+    public async deleteBalanceAction(actionID: number): Promise<void> {
+        const requestUser = Context.get("user");
+        
+        // Get the existing action
+        const existingAction = await this.db.balanceAction.findUnique({
+            where: { id: actionID },
+            include: { balance: true }
+        });
+
+        if (!existingAction) {
+            throw new EntityNotFoundError("Balance action not found");
+        }
+
+        // Validate user permissions
+        if (requestUser.role === Role.RUNNER && requestUser.id !== existingAction.balance.userID) {
+            throw new ValidationError("Runners can only manage their own balance actions");
+        }
+
+        if (requestUser.role === Role.MANAGER) {
+            const isUnderManager = await this.isUserUnderManager(requestUser.id, existingAction.balance.userID);
+            if (!isUnderManager) {
+                throw new ValidationError("You can only manage balance actions of users under your management");
+            }
+        }
+
+        // Reverse the balance effect by subtracting the amount
+        await this.db.balance.update({
+            where: { id: existingAction.balanceID },
+            data: { balance: { decrement: existingAction.amount } }
+        });
+
+        // Delete the action
+        await this.db.balanceAction.delete({
+            where: { id: actionID }
+        });
     }
 
     private async createInitialBalance(userID: number): Promise<BalanceWithActions> {
