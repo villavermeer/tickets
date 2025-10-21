@@ -1505,7 +1505,7 @@ export class TicketService extends Service implements ITicketService {
                     else if (e.codeLength === 2) meetsThreshold = false;
                 } else {
                     if (e.codeLength === 4) meetsThreshold = valueInEuros >= 1.25;
-                    else if (e.codeLength === 3) meetsThreshold = valueInEuros >= 3.00;
+                    else if (e.codeLength === 3) meetsThreshold = valueInEuros >= 3.75;
                     else if (e.codeLength === 2) meetsThreshold = valueInEuros >= 25.00;
                 }
                 if (!meetsThreshold) continue;
@@ -1656,7 +1656,7 @@ export class TicketService extends Service implements ITicketService {
                 } else {
                     // Default game thresholds
                     if (entry.codeLength === 4) return valueInEuros >= 1.25; // 1.25+ then deduct 1
-                    if (entry.codeLength === 3) return valueInEuros >= 3.00;  // 3-6.99 => -2, 7+ => -5
+                    if (entry.codeLength === 3) return valueInEuros >= 3.75;  // 3.75-6.99 => -2, 7+ => -5
                     if (entry.codeLength === 2) return valueInEuros >= 25.00; // 25+ => halve
                 }
                 return false;
