@@ -169,7 +169,10 @@ export class PrizeService extends Service implements IPrizeService {
 
         // Find raffles created on the provided day and collect winning values by game
         const raffleWhere: Prisma.RaffleWhereInput = {
-            created: { gte: raffleDayStartUTC, lte: raffleDayEndUTC }
+            OR: [
+                { created: { gte: raffleDayStartUTC, lte: raffleDayEndUTC } },
+                { updated: { gte: raffleDayStartUTC, lte: raffleDayEndUTC } }
+            ]
         };
 
         const raffles = await this.db.raffle.findMany({
