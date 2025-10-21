@@ -129,7 +129,9 @@ export class PrizeService extends Service implements IPrizeService {
         const currentUser = Context.get("user");
 
         // Compute date ranges in Amsterdam timezone
-        const amsterdamDate = DateTime.fromJSDate(date).setZone('Europe/Amsterdam');
+        // Parse the date as Amsterdam timezone to avoid UTC offset issues
+        const dateStr = DateTime.fromJSDate(date).toFormat('yyyy-MM-dd');
+        const amsterdamDate = DateTime.fromISO(dateStr, { zone: 'Europe/Amsterdam' });
         // Raffles are backdated to match ticket date when saved (see RaffleService.save)
         const dayStartUTC = amsterdamDate.startOf('day').toUTC().toJSDate();
         const dayEndUTC = amsterdamDate.endOf('day').toUTC().toJSDate();
@@ -232,19 +234,15 @@ export class PrizeService extends Service implements IPrizeService {
 
             const whereTickets: Prisma.TicketWhereInput = {
                 creatorID: scopedUserIDs ? { in: scopedUserIDs } : undefined,
+                created: { gte: dayStartUTC, lte: dayEndUTC },
                 games: { some: { gameID } },
                 // Any code that equals any of the winning suffixes for 2, 3 or 4 digits
                 codes: {
                     some: {
-                        AND: [
-                            { created: { gte: dayStartUTC, lte: dayEndUTC } },
-                            {
-                                OR: [
-                                    { code: { in: Array.from(suffix2) } },
-                                    { code: { in: Array.from(suffix3) } },
-                                    { code: { in: Array.from(suffix4) } }
-                                ]
-                            }
+                        OR: [
+                            { code: { in: Array.from(suffix2) } },
+                            { code: { in: Array.from(suffix3) } },
+                            { code: { in: Array.from(suffix4) } }
                         ]
                     }
                 }
@@ -280,15 +278,10 @@ export class PrizeService extends Service implements IPrizeService {
                     codes: {
                         // Keep all played codes that can potentially win (2/3/4 length)
                         where: {
-                            AND: [
-                                { created: { gte: dayStartUTC, lte: dayEndUTC } },
-                                {
-                                    OR: [
-                                        { code: { in: Array.from(suffix2) } },
-                                        { code: { in: Array.from(suffix3) } },
-                                        { code: { in: Array.from(suffix4) } }
-                                    ]
-                                }
+                            OR: [
+                                { code: { in: Array.from(suffix2) } },
+                                { code: { in: Array.from(suffix3) } },
+                                { code: { in: Array.from(suffix4) } }
                             ]
                         },
                         select: { code: true, value: true }

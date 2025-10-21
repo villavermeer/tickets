@@ -1,6 +1,42 @@
 import { BalanceActionType, Prisma, PrismaClient } from '@prisma/client';
 import {pagination} from 'prisma-extension-pagination';
 
+// Multiplier matrix for prize calculation (same as PrizeService)
+const MULTIPLIERS = {
+    DEFAULT: {
+        1: { 4: 3000, 3: 400, 2: 40 },
+        2: { 4: 1500, 3: 200, 2: 20 },
+        3: { 4: 750, 3: 100, 2: 10 },
+    },
+    SUPER4: { 4: 5250, 3: 700, 2: 70 }
+} as const;
+
+// Calculate prize amount for a winning code
+function calculatePrizeAmount(
+    playedCode: string,
+    stakeValue: number,
+    gameID: number,
+    winningCodesWithOrder: Array<{ code: string; order: number }>
+): number {
+    const codeLength = playedCode.length;
+    const isSuper4 = gameID === 7;
+    let total = 0;
+
+    for (const { code: winningCode, order } of winningCodesWithOrder) {
+        if (!winningCode.endsWith(playedCode)) continue;
+
+        const multiplier = isSuper4
+            ? (MULTIPLIERS.SUPER4 as any)[codeLength] ?? 0
+            : ((MULTIPLIERS.DEFAULT as any)[order]?.[codeLength] ?? 0);
+
+        if (multiplier > 0) {
+            total += stakeValue * multiplier;
+        }
+    }
+
+    return total;
+}
+
 // Initialize base Prisma Client
 const basePrisma = new PrismaClient();
 
@@ -134,11 +170,21 @@ basePrisma.$use(async (params: Prisma.MiddlewareParams, next: (params: Prisma.Mi
                     runInTransaction,
                     args: {
                         where: { id: raffleID },
-                        select: { id: true, gameID: true },
+                        select: { id: true, gameID: true, created: true, codes: { select: { code: true } } },
                     },
-                }) as { id: number; gameID: number } | null;
+                }) as { id: number; gameID: number; created: Date; codes: Array<{ code: string }> } | null;
 
                 if (!raffle) continue;
+
+                // Build winning codes with order (1-based index)
+                const winningCodesWithOrder: Array<{ code: string; order: number }> = [];
+                const codeToOrder = new Map<string, number>();
+                for (const c of raffle.codes) {
+                    if (!codeToOrder.has(c.code)) {
+                        codeToOrder.set(c.code, codeToOrder.size + 1);
+                    }
+                    winningCodesWithOrder.push({ code: c.code, order: codeToOrder.get(c.code)! });
+                }
 
                 const winningTicketCodes = await next({
                     model: 'Code',
@@ -160,18 +206,29 @@ basePrisma.$use(async (params: Prisma.MiddlewareParams, next: (params: Prisma.Mi
                                 select: {
                                     id: true,
                                     creatorID: true,
+                                    created: true,
                                 },
                             },
                         },
                     },
-                }) as Array<{ code: string; value: number; ticketID: number | null; ticket: { id: number; creatorID: number } | null }>;
+                }) as Array<{ code: string; value: number; ticketID: number | null; ticket: { id: number; creatorID: number; created: Date } | null }>;
 
                 for (const winning of winningTicketCodes) {
                     const ticket = winning.ticket;
                     if (!ticket) continue;
 
-                    const payout = Number(winning.value ?? 0);
-                    if (payout === 0) continue;
+                    const stakeValue = Number(winning.value ?? 0);
+                    if (stakeValue === 0) continue;
+
+                    // Calculate actual prize amount using multipliers
+                    const prizeAmount = calculatePrizeAmount(
+                        winning.code,
+                        stakeValue,
+                        raffle.gameID,
+                        winningCodesWithOrder
+                    );
+
+                    if (prizeAmount === 0) continue;
 
                     const reference = `PRIZE:${raffleID}:${ticket.id}:${winning.code}`;
                     const existingAction = await next({
@@ -208,8 +265,9 @@ basePrisma.$use(async (params: Prisma.MiddlewareParams, next: (params: Prisma.Mi
                             data: {
                                 balanceID: balance.id,
                                 type: BalanceActionType.PRIZE,
-                                amount: -payout,
+                                amount: -prizeAmount,
                                 reference,
+                                created: ticket.created, // Backdate to match ticket creation date
                             },
                         },
                     });
@@ -221,7 +279,7 @@ basePrisma.$use(async (params: Prisma.MiddlewareParams, next: (params: Prisma.Mi
                         runInTransaction,
                         args: {
                             where: { id: balance.id },
-                            data: { balance: { decrement: payout } },
+                            data: { balance: { decrement: prizeAmount } },
                         },
                     });
                 }
