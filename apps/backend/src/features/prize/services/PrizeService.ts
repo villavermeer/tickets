@@ -130,12 +130,9 @@ export class PrizeService extends Service implements IPrizeService {
 
         // Compute date ranges in Amsterdam timezone
         const amsterdamDate = DateTime.fromJSDate(date).setZone('Europe/Amsterdam');
-        // Raffle date is the day AFTER the ticket date (entered after midnight for that day)
-        const raffleAmsterdamDate = amsterdamDate.plus({ days: 1 });
-        const raffleDayStartUTC = raffleAmsterdamDate.startOf('day').toUTC().toJSDate();
-        const raffleDayEndUTC = raffleAmsterdamDate.endOf('day').toUTC().toJSDate();
-        const ticketDayStartUTC = amsterdamDate.startOf('day').toUTC().toJSDate();
-        const ticketDayEndUTC = amsterdamDate.endOf('day').toUTC().toJSDate();
+        // Raffles are backdated to match ticket date when saved (see RaffleService.save)
+        const dayStartUTC = amsterdamDate.startOf('day').toUTC().toJSDate();
+        const dayEndUTC = amsterdamDate.endOf('day').toUTC().toJSDate();
 
         // Determine user scope for filtering tickets
         let scopedUserIDs: number[] | undefined;
@@ -167,9 +164,10 @@ export class PrizeService extends Service implements IPrizeService {
             if (scopeUserID) scopedUserIDs = [scopeUserID];
         }
 
-        // Find raffles created on the provided day and collect winning values by game
+        // Find raffles for the provided day
+        // Use OR condition: created date is backdated, but updated date reflects corrections
         const raffleWhere: Prisma.RaffleWhereInput = {
-            created: { gte: raffleDayStartUTC, lte: raffleDayEndUTC }
+            created: { gte: dayStartUTC, lte: dayEndUTC }
         };
 
         const raffles = await this.db.raffle.findMany({
@@ -239,7 +237,7 @@ export class PrizeService extends Service implements IPrizeService {
                 codes: {
                     some: {
                         AND: [
-                            { created: { gte: ticketDayStartUTC, lte: ticketDayEndUTC } },
+                            { created: { gte: dayStartUTC, lte: dayEndUTC } },
                             {
                                 OR: [
                                     { code: { in: Array.from(suffix2) } },
@@ -283,7 +281,7 @@ export class PrizeService extends Service implements IPrizeService {
                         // Keep all played codes that can potentially win (2/3/4 length)
                         where: {
                             AND: [
-                                { created: { gte: ticketDayStartUTC, lte: ticketDayEndUTC } },
+                                { created: { gte: dayStartUTC, lte: dayEndUTC } },
                                 {
                                     OR: [
                                         { code: { in: Array.from(suffix2) } },
