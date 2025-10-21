@@ -130,8 +130,8 @@ export class PrizeService extends Service implements IPrizeService {
 
         // Compute date ranges in Amsterdam timezone
         const amsterdamDate = DateTime.fromJSDate(date).setZone('Europe/Amsterdam');
-        // Raffle date is the day AFTER the ticket date (entered after midnight for that day)
-        const raffleAmsterdamDate = amsterdamDate.plus({ days: 1 });
+        // Raffle date is the SAME as the ticket date (raffles are created with yesterday's date when entered)
+        const raffleAmsterdamDate = amsterdamDate;
         const raffleDayStartUTC = raffleAmsterdamDate.startOf('day').toUTC().toJSDate();
         const raffleDayEndUTC = raffleAmsterdamDate.endOf('day').toUTC().toJSDate();
         const ticketDayStartUTC = amsterdamDate.startOf('day').toUTC().toJSDate();
