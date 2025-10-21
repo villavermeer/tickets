@@ -353,7 +353,8 @@ export class PrizeService extends Service implements IPrizeService {
 
                 if (perCodeOccurrences.length === 0 || totalPrize <= 0) continue;
 
-                if (runnerID) {
+                // Add to runner totals only if this ticket was created by a runner
+                if (runnerID && creator?.role === Role.RUNNER) {
                     const existing = runnerTotalsMap.get(runnerID) ?? {
                         id: runnerID,
                         name: runnerName ?? '-',
@@ -367,7 +368,8 @@ export class PrizeService extends Service implements IPrizeService {
                     runnerTotalsMap.set(runnerID, existing);
                 }
 
-                if (managerID) {
+                // Add to manager totals only if this ticket was created by a manager
+                if (managerID && creator?.role === Role.MANAGER) {
                     const existing = managerTotalsMap.get(managerID) ?? {
                         id: managerID,
                         name: managerName ?? '-',
