@@ -6,7 +6,7 @@ import { RaffleInterface } from '@tickets/types/dist/raffle';
 import EntityNotFoundError from '../../../common/classes/errors/EntityNotFoundError';
 import { RaffleMapper } from '../mappers/RaffleMapper';
 import { CodeMapper } from '../../code/mappers/CodeMapper';
-import { Game, Ticket } from '@prisma/client';
+import { Game, Ticket, BalanceActionType } from '@prisma/client';
 import { GameInterface, TicketInterface } from '@tickets/types';
 import { DateTime } from 'luxon';
 
@@ -42,13 +42,14 @@ class RaffleService extends Service implements IRaffleService {
     public async save(data: Array<CreateRaffleRequest>) {
         const today = new Date();
         today.setUTCHours(0, 0, 0, 0);
+        const raffleDate = new Date(today.getTime() - 24 * 60 * 60 * 1000);
 
         for (const raffle of data) {
             // Check for existing raffle for today and gameID
             const existingRaffle = await this.db.raffle.findFirst({
                 where: {
                     gameID: raffle.gameID,
-                    created: new Date(today.getTime() - 24 * 60 * 60 * 1000)
+                    created: raffleDate
                 }
             });
 
@@ -70,7 +71,7 @@ class RaffleService extends Service implements IRaffleService {
                 savedRaffle = await this.db.raffle.create({
                     data: {
                         gameID: raffle.gameID,
-                        created: new Date(today.getTime() - 24 * 60 * 60 * 1000)
+                        created: raffleDate
                     }
                 });
             }
@@ -84,6 +85,9 @@ class RaffleService extends Service implements IRaffleService {
                 }))
             });
         }
+
+        // After all raffles are saved, create provision balance actions for the raffle date
+        await this.createProvisionBalanceActions(raffleDate);
     }
 
     public async all() {
@@ -233,6 +237,142 @@ class RaffleService extends Service implements IRaffleService {
 
         console.debug('Completed processing for getWinningTicketsByDate.');
         return result; // [{ game: { … }, tickets: [...] }, …]
+    }
+
+    /**
+     * Create provision balance actions for all users based on their ticket sales for the given date
+     * Provision = ticket sales * user's commission percentage
+     */
+    private async createProvisionBalanceActions(date: Date): Promise<void> {
+        console.debug(`Creating provision balance actions for date: ${date.toISOString()}`);
+        
+        // Build day boundaries in Amsterdam timezone
+        const amsterdamDate = DateTime.fromJSDate(date).setZone('Europe/Amsterdam');
+        const startOfDay = amsterdamDate.startOf('day').toUTC().toJSDate();
+        const endOfDay = amsterdamDate.endOf('day').toUTC().toJSDate();
+
+        console.debug(`Start of day: ${startOfDay.toISOString()}, End of day: ${endOfDay.toISOString()}`);
+
+        // Get all users with their commission percentage
+        const users = await this.db.user.findMany({
+            select: {
+                id: true,
+                commission: true,
+                balance: {
+                    select: {
+                        id: true
+                    }
+                }
+            },
+            where: {
+                commission: {
+                    gt: 0 // Only users with commission > 0
+                }
+            }
+        });
+
+        console.debug(`Found ${users.length} users with commission > 0`);
+
+        // For each user, calculate their ticket sales and create provision balance action
+        for (const user of users) {
+            // Get all tickets created by this user on the raffle date
+            const tickets = await this.db.ticket.findMany({
+                where: {
+                    creatorID: user.id,
+                    created: {
+                        gte: startOfDay,
+                        lte: endOfDay
+                    }
+                },
+                include: {
+                    codes: true,
+                    games: true
+                }
+            });
+
+            if (tickets.length === 0) {
+                console.debug(`User ${user.id} has no tickets for this date, skipping provision`);
+                continue;
+            }
+
+            // Calculate total ticket sales (Inleg) for this user
+            // Each code value * number of games the ticket is entered in
+            let totalTicketSales = 0;
+            for (const ticket of tickets) {
+                const gameCount = ticket.games.length;
+                const ticketValue = ticket.codes.reduce((sum, code) => sum + (code.value * gameCount), 0);
+                totalTicketSales += ticketValue;
+            }
+
+            if (totalTicketSales === 0) {
+                console.debug(`User ${user.id} has zero ticket sales, skipping provision`);
+                continue;
+            }
+
+            // Calculate provision (in cents)
+            const provisionAmount = Math.round((totalTicketSales * user.commission) / 100);
+
+            if (provisionAmount === 0) {
+                console.debug(`User ${user.id} provision is zero, skipping`);
+                continue;
+            }
+
+            console.debug(`User ${user.id}: ticket sales=${totalTicketSales}, commission=${user.commission}%, provision=${provisionAmount}`);
+
+            // Check if provision action already exists for this user and date
+            const existingProvision = await this.db.balanceAction.findFirst({
+                where: {
+                    balance: {
+                        userID: user.id
+                    },
+                    type: BalanceActionType.PROVISION,
+                    created: {
+                        gte: startOfDay,
+                        lte: endOfDay
+                    }
+                }
+            });
+
+            if (existingProvision) {
+                console.debug(`Provision already exists for user ${user.id} on this date, skipping`);
+                continue;
+            }
+
+            // Get or create balance for the user
+            let balance = user.balance;
+            if (!balance) {
+                const createdBalance = await this.db.balance.create({
+                    data: {
+                        userID: user.id,
+                        balance: 0
+                    }
+                });
+                balance = { id: createdBalance.id };
+            }
+
+            // Create provision balance action (negative amount to deduct from balance)
+            await this.db.balanceAction.create({
+                data: {
+                    balanceID: balance.id,
+                    type: BalanceActionType.PROVISION,
+                    amount: -provisionAmount, // Negative to deduct from balance
+                    reference: `Provisie ${amsterdamDate.toFormat('dd-MM-yyyy')}`,
+                    created: endOfDay // Set to end of day so it's the last action of the day
+                }
+            });
+
+            // Update balance
+            await this.db.balance.update({
+                where: { id: balance.id },
+                data: {
+                    balance: { decrement: provisionAmount }
+                }
+            });
+
+            console.debug(`Created provision balance action for user ${user.id}`);
+        }
+
+        console.debug('Completed creating provision balance actions');
     }
 }
 

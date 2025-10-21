@@ -177,4 +177,5 @@ enum BalanceActionType {
   CORRECTION
   PRIZE
   TICKET_SALE
+  PROVISION
 }
