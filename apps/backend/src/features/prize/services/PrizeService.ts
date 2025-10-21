@@ -130,8 +130,8 @@ export class PrizeService extends Service implements IPrizeService {
 
         // Compute date ranges in Amsterdam timezone
         const amsterdamDate = DateTime.fromJSDate(date).setZone('Europe/Amsterdam');
-        // Raffle date is the SAME as the ticket date (raffles are created with yesterday's date when entered)
-        const raffleAmsterdamDate = amsterdamDate;
+        // Raffle date is the day AFTER the ticket date (entered after midnight for that day)
+        const raffleAmsterdamDate = amsterdamDate.plus({ days: 1 });
         const raffleDayStartUTC = raffleAmsterdamDate.startOf('day').toUTC().toJSDate();
         const raffleDayEndUTC = raffleAmsterdamDate.endOf('day').toUTC().toJSDate();
         const ticketDayStartUTC = amsterdamDate.startOf('day').toUTC().toJSDate();
@@ -169,10 +169,7 @@ export class PrizeService extends Service implements IPrizeService {
 
         // Find raffles created on the provided day and collect winning values by game
         const raffleWhere: Prisma.RaffleWhereInput = {
-            OR: [
-                { created: { gte: raffleDayStartUTC, lte: raffleDayEndUTC } },
-                { updated: { gte: raffleDayStartUTC, lte: raffleDayEndUTC } }
-            ]
+            created: { gte: raffleDayStartUTC, lte: raffleDayEndUTC }
         };
 
         const raffles = await this.db.raffle.findMany({
