@@ -67,6 +67,7 @@ model Code {
   raffleID     Int?
   relayBatchID Int?
   relayed      DateTime?
+  daily        Boolean     @default(false)
   raffle       Raffle?     @relation(fields: [raffleID], references: [id], onDelete: Cascade)
   relayBatch   RelayBatch? @relation(fields: [relayBatchID], references: [id])
   ticket       Ticket?     @relation(fields: [ticketID], references: [id], onDelete: Cascade)

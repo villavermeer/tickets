@@ -33,10 +33,12 @@ class TicketRouter implements ITicketRouter {
         this.router.get('/relayable/game-totals', ticketController.exportRelayableGameTotals);
         this.router.get('/relayable/balance', ticketController.exportRelayableBalanceSummary);
         this.router.get('/relayable/prizes', ticketController.exportRelayablePrizes);
+        this.router.get('/relay-batches', ticketController.getRelayBatchHistory);
         this.router.post('/', ticketController.create);
         this.router.post('/export', ticketController.export);
         this.router.put('/:id', ticketController.update);
         this.router.delete('/:id', ticketController.delete);
+        this.router.delete('/relay-batches/:id', ticketController.undoRelayBatch);
     }
 }
 

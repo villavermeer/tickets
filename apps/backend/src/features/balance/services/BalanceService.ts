@@ -315,7 +315,7 @@ export class BalanceService extends Service implements IBalanceService {
                 updateData.balance = { decrement: Math.abs(amount) };
                 break;
             case BalanceActionType.PRIZE:
-                updateData.balance = { decrement: Math.abs(amount) };
+                updateData.balance = { increment: Math.abs(amount) };
                 break;
             case BalanceActionType.PROVISION:
                 updateData.balance = { decrement: Math.abs(amount) };

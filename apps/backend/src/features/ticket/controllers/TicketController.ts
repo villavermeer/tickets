@@ -17,6 +17,8 @@ export interface ITicketController {
     exportRelayableGameTotals(req: Request, res: Response, next: NextFunction): Promise<void>;
     exportRelayableBalanceSummary(req: Request, res: Response, next: NextFunction): Promise<void>;
     exportRelayablePrizes(req: Request, res: Response, next: NextFunction): Promise<void>;
+    getRelayBatchHistory(req: Request, res: Response, next: NextFunction): Promise<void>;
+    undoRelayBatch(req: Request, res: Response, next: NextFunction): Promise<void>;
 }
 
 @injectable()
@@ -268,6 +270,34 @@ export class TicketController extends Controller implements ITicketController {
 
                 res.status(200).json(formatSuccessResponse('Results', relayableTickets));
             }
+        } catch (error: any) {
+            this.handleError(error, req, res);
+        }
+    }
+
+    public getRelayBatchHistory = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+        try {
+            // Check if user is authorized for relay operations
+            this.checkRelayAuthorization();
+
+            const ticketService = container.resolve<ITicketService>("TicketService");
+            const history = await ticketService.getRelayBatchHistory();
+
+            res.status(200).json(formatSuccessResponse('batches', history));
+        } catch (error: any) {
+            this.handleError(error, req, res);
+        }
+    }
+
+    public undoRelayBatch = async (req: Request, res: Response, next: NextFunction): Promise<void> => {
+        try {
+            // Check if user is authorized for relay operations
+            this.checkRelayAuthorization();
+
+            const ticketService = container.resolve<ITicketService>("TicketService");
+            await ticketService.undoRelayBatch(Number(req.params.id));
+
+            res.status(200).json(formatMutationResponse('Relay batch undone successfully'));
         } catch (error: any) {
             this.handleError(error, req, res);
         }

@@ -27,6 +27,8 @@ export interface ITicketService {
     exportRelayableGameTotals(start: string, end: string, commit?: boolean, combineAcrossGames?: boolean): Promise<ExcelJS.Buffer>;
     exportRelayableBalanceSummary(start: string, end: string): Promise<ExcelJS.Buffer>;
     exportRelayablePrizes(start: string, end: string, prizeDate?: string, scopeUserID?: number): Promise<ExcelJS.Buffer>;
+    getRelayBatchHistory(): Promise<any[]>;
+    undoRelayBatch(batchID: number): Promise<void>;
     delete(id: number): Promise<void>;
 }
 
@@ -81,7 +83,9 @@ export class TicketService extends Service implements ITicketService {
                 some: {
                     ticketID: {
                         not: null
-                    }
+                    },
+                    // Exclude tickets that only contain daily codes (for backend processing only)
+                    daily: false
                 }
             }
         };
@@ -114,6 +118,12 @@ export class TicketService extends Service implements ITicketService {
     public raffle = async (raffleID: number, start?: string, end?: string): Promise<TicketInterface[]> => {
         const whereClause: any = {
             raffleID: raffleID,
+            // Exclude tickets that only contain daily codes (for backend processing only)
+            codes: {
+                some: {
+                    daily: false
+                }
+            }
         };
 
         if (start || end) {
@@ -179,6 +189,7 @@ export class TicketService extends Service implements ITicketService {
                             code: code.code,
                             value: parseInt(code.value.toString(), 10),
                             relayed: data.relayed ? new Date() : null,
+                            daily: Boolean(data.relayed), // Mark as daily for Vaste lijst tickets
                         })),
                     },
                 },
@@ -348,6 +359,12 @@ export class TicketService extends Service implements ITicketService {
                 created: {
                     gte: startOfDay,
                     lte: endOfDay
+                },
+                // Exclude tickets that only contain daily codes (for backend processing only)
+                codes: {
+                    some: {
+                        daily: false
+                    }
                 }
             },
             orderBy: {
@@ -385,6 +402,12 @@ export class TicketService extends Service implements ITicketService {
             where: {
                 creatorID: {
                     in: runnerIDs
+                },
+                // Exclude tickets that only contain daily codes (for backend processing only)
+                codes: {
+                    some: {
+                        daily: false
+                    }
                 }
             },
             orderBy: {
@@ -534,11 +557,21 @@ export class TicketService extends Service implements ITicketService {
 
             // Add table data (only code, value, and final value - no deduction)
             chunk.entries.forEach((entry: RelayableTicketEntry) => {
-                worksheet.addRow([
+                const row = worksheet.addRow([
                     entry.code,
                     (entry.value / 100).toFixed(2),
                     (entry.final / 100).toFixed(2)
                 ]);
+                
+                // Apply special styling for "Vaste lijst" row
+                if (entry.code === 'Vaste lijst') {
+                    row.font = { italic: true };
+                    row.fill = {
+                        type: 'pattern',
+                        pattern: 'solid',
+                        fgColor: { argb: 'FFFFF4CC' } // Light yellow background
+                    };
+                }
             });
 
             worksheet.addRow([]); // Empty row for spacing between game combinations
@@ -638,11 +671,20 @@ export class TicketService extends Service implements ITicketService {
 
                 const drawTableRow = (entry: RelayableTicketEntry, y: number, isStriped: boolean) => {
                     doc.save();
-                    if (isStriped) {
+                    
+                    // Special styling for "Vaste lijst" row
+                    const isVasteLijst = entry.code === 'Vaste lijst';
+                    
+                    if (isVasteLijst) {
+                        // Light yellow background for "Vaste lijst"
+                        doc.rect(left, y, tableWidth, rowHeight).fill('#fff4cc');
+                    } else if (isStriped) {
                         doc.rect(left, y, tableWidth, rowHeight).fill('#fbfcfe');
                     }
+                    
                     doc.fillColor('#000000');
-                    doc.font('Helvetica').fontSize(11)
+                    const font = isVasteLijst ? 'Helvetica-Oblique' : 'Helvetica';
+                    doc.font(font).fontSize(11)
                         .text(entry.code, left + 8, y + 6, { width: columnWidths[0] - 16 });
                     doc.text((entry.final / 100).toFixed(2), left + columnWidths[0], y + 6, { width: columnWidths[1] - 16, align: 'right' });
                     doc.restore();
@@ -681,12 +723,16 @@ export class TicketService extends Service implements ITicketService {
 
                 // Process all non-Super4 games first
                 nonSuper4Chunks.forEach((chunk, chunkIndex) => {
+                    // Filter out "Vaste lijst" entries - they'll be rendered separately at the end
+                    const regularEntries = chunk.entries.filter(e => e.code !== 'Vaste lijst');
+                    const dailyDeduction = (chunk as any).dailyDeduction;
+                    const chunkTotal = chunk.entries.reduce((sum, entry) => sum + entry.final, 0);
+
                     let entryIndex = 0;
                     let pageForChunk = 0;
                     const combinationTitle = `${chunk.gameCombination.join(', ')}`;
-                    const chunkTotal = chunk.entries.reduce((sum, entry) => sum + entry.final, 0);
 
-                    while (entryIndex < chunk.entries.length || pageForChunk === 0) {
+                    while (entryIndex < regularEntries.length || pageForChunk === 0) {
                         if (!isFirstPage) {
                             doc.addPage();
                         }
@@ -700,27 +746,36 @@ export class TicketService extends Service implements ITicketService {
                         y += rowHeight;
 
                         let stripe = false;
-                        while (entryIndex < chunk.entries.length) {
+                        while (entryIndex < regularEntries.length) {
                             if (y + rowHeight > bottomLimit) {
                                 break;
                             }
-                            const entry = chunk.entries[entryIndex];
+                            const entry = regularEntries[entryIndex];
                             drawTableRow(entry, y, stripe);
                             stripe = !stripe;
                             y += rowHeight;
                             entryIndex++;
                         }
 
-                        // Add total row after all entries are rendered
-                        if (entryIndex >= chunk.entries.length) {
-                            // Check if we have room for the total row
-                            if (y + rowHeight > bottomLimit) {
+                        // After all regular entries are rendered, add "Vaste lijst" and total row
+                        if (entryIndex >= regularEntries.length) {
+                            // Check if we have room for "Vaste lijst" row (if exists) and total row
+                            const rowsNeeded = dailyDeduction ? 2 : 1;
+                            if (y + (rowHeight * rowsNeeded) > bottomLimit) {
                                 doc.addPage();
                                 renderReportHeader(`${combinationTitle} (vervolg)`);
                                 y = doc.y;
                                 drawTableHeader(y);
                                 y += rowHeight;
                             }
+                            
+                            // Render "Vaste lijst" row if it exists
+                            if (dailyDeduction) {
+                                drawTableRow(dailyDeduction, y, false);
+                                y += rowHeight;
+                            }
+                            
+                            // Render total row
                             drawTotalRow(chunkTotal, y);
                             y += rowHeight;
 
@@ -739,13 +794,24 @@ export class TicketService extends Service implements ITicketService {
 
                 // Now process all Super 4 games in a single combined table at the end
                 if (super4Chunks.length > 0) {
-                    // Combine all Super 4 entries into one array
+                    // Combine all Super 4 entries into one array, filtering out "Vaste lijst" entries
                     const allSuper4Entries: RelayableTicketEntry[] = [];
+                    let super4DailyDeduction: any = null;
+                    
                     super4Chunks.forEach(chunk => {
-                        allSuper4Entries.push(...chunk.entries);
+                        // Filter out "Vaste lijst" entries from regular entries
+                        const regularEntries = chunk.entries.filter(e => e.code !== 'Vaste lijst');
+                        allSuper4Entries.push(...regularEntries);
+                        
+                        // Store the daily deduction (there should only be one for Super4)
+                        if ((chunk as any).dailyDeduction) {
+                            super4DailyDeduction = (chunk as any).dailyDeduction;
+                        }
                     });
 
-                    const super4Total = allSuper4Entries.reduce((sum, entry) => sum + entry.final, 0);
+                    const super4Total = super4Chunks.reduce((sum, chunk) => 
+                        sum + chunk.entries.reduce((entrySum, entry) => entrySum + entry.final, 0), 0
+                    );
                     const combinationTitle = 'Super 4';
 
                     let entryIndex = 0;
@@ -776,16 +842,25 @@ export class TicketService extends Service implements ITicketService {
                             entryIndex++;
                         }
 
-                        // Add total row after all entries are rendered
+                        // After all regular entries are rendered, add "Vaste lijst" and total row
                         if (entryIndex >= allSuper4Entries.length) {
-                            // Check if we have room for the total row
-                            if (y + rowHeight > bottomLimit) {
+                            // Check if we have room for "Vaste lijst" row (if exists) and total row
+                            const rowsNeeded = super4DailyDeduction ? 2 : 1;
+                            if (y + (rowHeight * rowsNeeded) > bottomLimit) {
                                 doc.addPage();
                                 renderReportHeader(`${combinationTitle} (vervolg)`);
                                 y = doc.y;
                                 drawTableHeader(y);
                                 y += rowHeight;
                             }
+                            
+                            // Render "Vaste lijst" row if it exists
+                            if (super4DailyDeduction) {
+                                drawTableRow(super4DailyDeduction, y, false);
+                                y += rowHeight;
+                            }
+                            
+                            // Render total row
                             drawTotalRow(super4Total, y);
                             y += rowHeight;
                         }
@@ -801,16 +876,79 @@ export class TicketService extends Service implements ITicketService {
         });
     }
 
+    private getAllTicketsForDateRange = async (start: string, end: string): Promise<ChunkedRelayableTicket[]> => {
+        const startDate = this.parseDateParameter(start, true);
+        const endDate = this.parseDateParameter(end, false);
+
+        console.log('getAllTicketsForDateRange - Parsed dates:', {
+            originalStart: start,
+            originalEnd: end,
+            parsedStart: startDate.toISOString(),
+            parsedEnd: endDate.toISOString(),
+            startUTC: startDate.toUTCString(),
+            endUTC: endDate.toUTCString()
+        });
+
+        const tickets = await this.db.ticket.findMany({
+            where: {
+                created: {
+                    gte: startDate,
+                    lte: endDate
+                }
+            },
+            select: { id: true, created: true }
+        });
+
+        console.log('getAllTicketsForDateRange - Found tickets:', {
+            count: tickets.length,
+            ticketIds: tickets.map(t => t.id),
+            firstTicketCreated: tickets[0]?.created?.toISOString(),
+            lastTicketCreated: tickets[tickets.length - 1]?.created?.toISOString()
+        });
+
+        const codes = await this.db.code.findMany({
+            where: {
+                ticketID: { in: tickets.map(ticket => ticket.id) },
+            },
+            include: {
+                ticket: {
+                    include: {
+                        games: { include: { game: true } }
+                    }
+                }
+            }
+        });
+
+        console.log('getAllTicketsForDateRange - Found codes:', {
+            count: codes.length,
+            sampleCodes: codes.slice(0, 5).map(c => ({ 
+                id: c.id, 
+                code: c.code, 
+                value: c.value, 
+                ticketId: c.ticketID
+            }))
+        });
+
+        // Use the same logic as getRelayableTickets but without the relayed filter
+        const results = await this.buildRelayableChunksIncremental(codes, startDate, endDate);
+        console.log('getAllTicketsForDateRange - Results generated:', {
+            chunkCount: results.length,
+            totalEntries: results.reduce((sum, chunk) => sum + chunk.entries.length, 0)
+        });
+
+        return results;
+    };
+
     public exportRelayableGameTotals = async (start: string, end: string, commit?: boolean, combineAcrossGames?: boolean): Promise<ExcelJS.Buffer> => {
         if (!start || !end) {
             throw new ValidationError('Start- en einddatum zijn verplicht voor het exporteren van spel totalen.');
         }
 
-        const relayableTickets = await this.getRelayableTickets(start, end, commit, combineAcrossGames);
+        const allTickets = await this.getAllTicketsForDateRange(start, end);
 
         const totalsMap = new Map<string, number>(); // key => aggregated cents
 
-        relayableTickets.forEach((chunk) => {
+        allTickets.forEach((chunk) => {
             const gameLabel = chunk.gameCombination.join(' + ') || 'Onbekend spel';
             chunk.entries.forEach((entry) => {
                 const key = `${gameLabel}||${entry.code}`;
@@ -977,6 +1115,9 @@ export class TicketService extends Service implements ITicketService {
                     case BalanceActionType.PRIZE:
                         previousBalance += action.amount; // Already negative
                         break;
+                    case BalanceActionType.PROVISION:
+                        previousBalance += action.amount;
+                        break;
                 }
             });
 
@@ -1008,10 +1149,14 @@ export class TicketService extends Service implements ITicketService {
                 case BalanceActionType.PRIZE:
                     entry.prijs += Math.abs(action.amount);
                     break;
+                case BalanceActionType.PROVISION:
+                    entry.provisie += action.amount;
+                    break;
             }
         });
 
         // Calculate commission (provisie) for each user based on their tickets
+        // Note: This is in addition to any PROVISION balance actions already processed above
         const userCommissionMap = new Map(users.map(u => [u.id, u.commission]));
         tickets.forEach((ticket) => {
             const entry = byUser.get(ticket.creatorID);
@@ -1194,6 +1339,119 @@ export class TicketService extends Service implements ITicketService {
         }
 
         return workbook.xlsx.writeBuffer();
+    }
+
+    public getRelayBatchHistory = async (): Promise<any[]> => {
+        const batches = await this.db.relayBatch.findMany({
+            orderBy: { created: 'desc' },
+            include: {
+                codes: {
+                    select: {
+                        id: true,
+                        code: true,
+                        value: true,
+                        ticket: {
+                            select: {
+                                games: {
+                                    include: {
+                                        game: true
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        });
+
+        // Calculate totals for each batch
+        const history = batches.map(batch => {
+            let totalValue = 0;
+            let totalDeduction = 0;
+            let totalFinal = 0;
+
+            // Group codes by game to apply deduction rules
+            const codesByGame = new Map<string, any[]>();
+            
+            batch.codes.forEach(code => {
+                const gameIds = code.ticket?.games.map(g => g.game.id) || [];
+                const gameNames = code.ticket?.games.map(g => g.game.name) || [];
+                const gameKey = gameIds.sort().join(',');
+                
+                if (!codesByGame.has(gameKey)) {
+                    codesByGame.set(gameKey, []);
+                }
+                
+                codesByGame.get(gameKey)!.push({
+                    code: code.code,
+                    value: code.value,
+                    gameIds,
+                    gameNames
+                });
+            });
+
+            // Calculate deductions per code
+            codesByGame.forEach((codes, _gameKey) => {
+                codes.forEach(code => {
+                    const codeLength = String(code.code).length;
+                    const { deduction, finalValue } = this.calculateDeduction(
+                        codeLength,
+                        code.value,
+                        code.gameIds
+                    );
+                    
+                    totalValue += code.value;
+                    totalDeduction += deduction;
+                    totalFinal += finalValue;
+                });
+            });
+
+            return {
+                id: batch.id,
+                start: batch.start,
+                end: batch.end,
+                created: batch.created,
+                totalValue,
+                totalDeduction,
+                totalFinal,
+                codeCount: batch.codes.length
+            };
+        });
+
+        return history;
+    }
+
+    public undoRelayBatch = async (batchID: number): Promise<void> => {
+        // Verify batch exists
+        const batch = await this.db.relayBatch.findUnique({
+            where: { id: batchID },
+            include: {
+                codes: {
+                    select: { id: true }
+                }
+            }
+        });
+
+        if (!batch) {
+            throw new ValidationError('Relay batch niet gevonden');
+        }
+
+        // Use transaction to ensure atomicity
+        await this.db.$transaction(async (tx) => {
+            // Reset all codes in this batch
+            await tx.code.updateMany({
+                where: { relayBatchID: batchID },
+                data: {
+                    relayed: null,
+                    relayBatchID: null
+                }
+            });
+
+            // Delete the batch
+            await tx.relayBatch.delete({
+                where: { id: batchID }
+            });
+        });
     }
 
     public delete = async (id: number): Promise<void> => {
@@ -1390,6 +1648,34 @@ export class TicketService extends Service implements ITicketService {
         return _.sortBy(allChunks, c => c.gameCombination.join('|'));
     }
 
+    // Helper method to calculate daily code totals for specific games
+    private calculateDailyCodeTotals = async (dayStart: Date, dayEnd: Date): Promise<Map<number, number>> => {
+        const dailyTotals = new Map<number, number>();
+        
+        // Query daily codes for WNK (gameID 1) and Super4 (gameID 7)
+        const targetGameIds = [1, 7];
+        
+        for (const gameID of targetGameIds) {
+            const dailyCodes = await this.db.code.findMany({
+                where: {
+                    daily: true,
+                    ticket: {
+                        created: { gte: dayStart, lte: dayEnd },
+                        games: { some: { gameID } }
+                    }
+                },
+                select: { value: true }
+            });
+            
+            const total = dailyCodes.reduce((sum, code) => sum + code.value, 0);
+            if (total > 0) {
+                dailyTotals.set(gameID, total);
+            }
+        }
+        
+        return dailyTotals;
+    }
+
     // Build chunks but compute per-code incremental values for the selected window by
     // subtracting already-committed amounts earlier in the same day.
     private buildRelayableChunksIncrementalDetailed = async (codes: any[], windowStart: Date, _windowEnd: Date): Promise<{ chunks: ChunkedRelayableTicket[]; relayableCodeIds: number[] }> => {
@@ -1454,9 +1740,14 @@ export class TicketService extends Service implements ITicketService {
             dayEnd.setUTCHours(23, 59, 59, 999);
         }
 
+        // Calculate daily code totals for WNK and Super4
+        const dailyTotals = await this.calculateDailyCodeTotals(dayStart, dayEnd);
+
         const chunks: ChunkedRelayableTicket[] = [];
         for (const group of Array.from(groups.values())) {
             const isSuper4 = group.gameIds.includes(7);
+            const gameID = group.gameIds[0];
+            
             // Aggregate values for the window per code
             const codeGroups = _.groupBy(group.entries, 'code');
             const windowAggregated: { code: string; codeLength: number; value: number; ids: number[] }[] = [];
@@ -1530,19 +1821,39 @@ export class TicketService extends Service implements ITicketService {
                 continue;
             }
 
-            const totalValue = entriesDetailed.reduce((s, x) => s + x.value, 0);
+            // Calculate daily deduction for this game (will be shown separately)
+            const dailyTotal = dailyTotals.get(gameID) || 0;
+            
+            // Calculate totals including the daily deduction
+            const totalValue = entriesDetailed.reduce((s, x) => s + x.value, 0) - dailyTotal;
             const deduction = entriesDetailed.reduce((s, x) => s + x.deduction, 0);
-            const finalValue = entriesDetailed.reduce((s, x) => s + x.final, 0);
+            const finalValue = entriesDetailed.reduce((s, x) => s + x.final, 0) - dailyTotal;
+
+            // Create the "Vaste lijst" entry separately
+            const vasteLijstEntry = dailyTotal > 0 ? {
+                code: 'Vaste lijst',
+                codeLength: 0,
+                value: -dailyTotal,
+                deduction: 0,
+                final: -dailyTotal
+            } : null;
+
+            // Store all entries including "Vaste lijst" for Excel export
+            const allEntries = vasteLijstEntry 
+                ? [...entriesDetailed, vasteLijstEntry]
+                : entriesDetailed;
 
             chunks.push({
                 gameCombination: group.gameNames,
-                codes: entriesDetailed.map(e => e.code),
+                codes: allEntries.map(e => e.code),
                 totalValue,
                 ticketCount: entriesDetailed.length,
                 deduction,
                 finalValue,
-                entries: entriesDetailed
-            });
+                entries: allEntries,
+                // Store daily deduction separately for PDF rendering
+                dailyDeduction: vasteLijstEntry
+            } as any);
         }
 
         const sortedChunks = _.sortBy(chunks, c => c.gameCombination.join('|'));

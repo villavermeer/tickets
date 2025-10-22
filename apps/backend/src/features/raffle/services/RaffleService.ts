@@ -86,8 +86,9 @@ class RaffleService extends Service implements IRaffleService {
             });
         }
 
-        // After all raffles are saved, create provision balance actions for the raffle date
+        // After all raffles are saved, create provision and prize balance actions for the raffle date
         await this.createProvisionBalanceActions(raffleDate);
+        await this.createPrizeBalanceActions(raffleDate);
     }
 
     public async all() {
@@ -373,6 +374,186 @@ class RaffleService extends Service implements IRaffleService {
         }
 
         console.debug('Completed creating provision balance actions');
+    }
+
+    /**
+     * Create prize balance actions for all winning tickets for the given date
+     * This method calculates prizes using the same logic as PrizeService
+     */
+    private async createPrizeBalanceActions(date: Date): Promise<void> {
+        console.debug(`Creating prize balance actions for date: ${date.toISOString()}`);
+        
+        // Build day boundaries in Amsterdam timezone
+        const amsterdamDate = DateTime.fromJSDate(date).setZone('Europe/Amsterdam');
+        const startOfDay = amsterdamDate.startOf('day').toUTC().toJSDate();
+        const endOfDay = amsterdamDate.endOf('day').toUTC().toJSDate();
+
+        console.debug(`Start of day: ${startOfDay.toISOString()}, End of day: ${endOfDay.toISOString()}`);
+
+        // Get all raffles for this date
+        const raffles = await this.db.raffle.findMany({
+            where: {
+                created: { gte: startOfDay, lte: endOfDay }
+            },
+            include: {
+                game: true,
+                codes: true
+            }
+        });
+
+        if (raffles.length === 0) {
+            console.debug('No raffles found for this date, skipping prize creation');
+            return;
+        }
+
+        console.debug(`Found ${raffles.length} raffles for this date`);
+
+        // Group winning codes by game
+        const winningCodesByGame = new Map<number, Array<{ code: string; order: number }>>();
+        
+        for (const raffle of raffles) {
+            if (!winningCodesByGame.has(raffle.gameID)) {
+                winningCodesByGame.set(raffle.gameID, []);
+            }
+            
+            const codeToOrder = new Map<string, number>();
+            for (const code of raffle.codes) {
+                if (!codeToOrder.has(code.code)) {
+                    codeToOrder.set(code.code, codeToOrder.size + 1);
+                }
+                winningCodesByGame.get(raffle.gameID)!.push({
+                    code: code.code,
+                    order: codeToOrder.get(code.code)!
+                });
+            }
+        }
+
+        // Process each game's winning tickets
+        for (const [gameID, winningCodes] of winningCodesByGame) {
+            if (winningCodes.length === 0) continue;
+
+            const winningValues = winningCodes.map(wc => parseInt(wc.code, 10));
+            
+            // Find all winning tickets for this game
+            const winningTickets = await this.db.ticket.findMany({
+                where: {
+                    created: { gte: startOfDay, lte: endOfDay },
+                    games: { some: { gameID } },
+                    codes: { some: { value: { in: winningValues } } }
+                },
+                include: {
+                    codes: {
+                        where: { value: { in: winningValues } },
+                        select: { code: true, value: true }
+                    },
+                    creator: {
+                        select: { id: true }
+                    }
+                }
+            });
+
+            console.debug(`Found ${winningTickets.length} winning tickets for game ${gameID}`);
+
+            // Process each winning ticket
+            for (const ticket of winningTickets) {
+                for (const ticketCode of ticket.codes) {
+                    const prizeAmount = this.calculatePrizeAmount(
+                        ticketCode.code,
+                        ticketCode.value,
+                        gameID,
+                        winningCodes
+                    );
+
+                    if (prizeAmount <= 0) continue;
+
+                    const reference = `PRIZE:${raffles.find(r => r.gameID === gameID)?.id}:${ticket.id}:${ticketCode.code}`;
+
+                    // Check if prize action already exists
+                    const existingPrize = await this.db.balanceAction.findFirst({
+                        where: { reference }
+                    });
+
+                    if (existingPrize) {
+                        console.debug(`Prize action already exists for ticket ${ticket.id}, code ${ticketCode.code}`);
+                        continue;
+                    }
+
+                    // Get or create balance for the user
+                    let balance = await this.db.balance.findUnique({
+                        where: { userID: ticket.creator.id }
+                    });
+
+                    if (!balance) {
+                        balance = await this.db.balance.create({
+                            data: {
+                                userID: ticket.creator.id,
+                                balance: 0
+                            }
+                        });
+                    }
+
+                    // Create prize balance action (negative amount to add to balance)
+                    await this.db.balanceAction.create({
+                        data: {
+                            balanceID: balance.id,
+                            type: BalanceActionType.PRIZE,
+                            amount: -prizeAmount, // Negative to add to balance
+                            reference,
+                            created: ticket.created // Use ticket creation date
+                        }
+                    });
+
+                    // Update balance (add the prize amount)
+                    await this.db.balance.update({
+                        where: { id: balance.id },
+                        data: {
+                            balance: { increment: prizeAmount }
+                        }
+                    });
+
+                    console.debug(`Created prize action for ticket ${ticket.id}, code ${ticketCode.code}: ${prizeAmount/100} EUR`);
+                }
+            }
+        }
+
+        console.debug('Completed creating prize balance actions');
+    }
+
+    /**
+     * Calculate prize amount using the same logic as PrizeService
+     */
+    private calculatePrizeAmount(
+        playedCode: string,
+        stakeValue: number,
+        gameID: number,
+        winningCodesWithOrder: Array<{ code: string; order: number }>
+    ): number {
+        const MULTIPLIERS = {
+            DEFAULT: {
+                1: { 4: 3000, 3: 400, 2: 40 },
+                2: { 4: 1500, 3: 200, 2: 20 },
+                3: { 4: 750, 3: 100, 2: 10 },
+            },
+            SUPER4: { 4: 5250, 3: 700, 2: 70 }
+        } as const;
+
+        const codeLength = playedCode.length;
+        const isSuper4 = gameID === 7;
+        let total = 0;
+
+        for (const { code: winningCode, order } of winningCodesWithOrder) {
+            if (!winningCode.endsWith(playedCode)) continue;
+
+            const multiplier = isSuper4
+                ? (MULTIPLIERS.SUPER4 as any)[codeLength] ?? 0
+                : ((MULTIPLIERS.DEFAULT as any)[order]?.[codeLength] ?? 0);
+
+            if (multiplier > 0) {
+                total += stakeValue * multiplier;
+            }
+        }
+
+        return total;
     }
 }
 
