@@ -1648,9 +1648,9 @@ export class TicketService extends Service implements ITicketService {
         return _.sortBy(allChunks, c => c.gameCombination.join('|'));
     }
 
-    // Helper method to calculate daily code totals for specific games
-    private calculateDailyCodeTotals = async (dayStart: Date, dayEnd: Date): Promise<Map<number, number>> => {
-        const dailyTotals = new Map<number, number>();
+    // Helper method to calculate daily code totals per code for specific games
+    private calculateDailyCodeTotals = async (dayStart: Date, dayEnd: Date): Promise<Map<string, number>> => {
+        const dailyTotals = new Map<string, number>();
         
         // Query daily codes for WNK (gameID 1) and Super4 (gameID 7)
         const targetGameIds = [1, 7];
@@ -1664,12 +1664,14 @@ export class TicketService extends Service implements ITicketService {
                         games: { some: { gameID } }
                     }
                 },
-                select: { value: true }
+                select: { code: true, value: true }
             });
             
-            const total = dailyCodes.reduce((sum, code) => sum + code.value, 0);
-            if (total > 0) {
-                dailyTotals.set(gameID, total);
+            // Group by code and sum values
+            for (const code of dailyCodes) {
+                const codeStr = String(code.code);
+                const currentTotal = dailyTotals.get(codeStr) || 0;
+                dailyTotals.set(codeStr, currentTotal + (code.value as number));
             }
         }
         
@@ -1740,8 +1742,8 @@ export class TicketService extends Service implements ITicketService {
             dayEnd.setUTCHours(23, 59, 59, 999);
         }
 
-        // Calculate daily code totals for WNK and Super4
-        const dailyTotals = await this.calculateDailyCodeTotals(dayStart, dayEnd);
+        // Calculate daily code totals per code for WNK and Super4
+        const dailyTotalsPerCode = await this.calculateDailyCodeTotals(dayStart, dayEnd);
 
         const chunks: ChunkedRelayableTicket[] = [];
         for (const group of Array.from(groups.values())) {
@@ -1787,8 +1789,14 @@ export class TicketService extends Service implements ITicketService {
                 const totalAllDay = totalByCode.get(e.code) || 0;
                 const committedValue = committedByCode.get(e.code) || 0;
 
-                // Apply threshold to full day sum
-                const valueInEuros = totalAllDay / 100;
+                // Get daily deduction for this specific code
+                const dailyDeductionForCode = dailyTotalsPerCode.get(e.code) || 0;
+                
+                // Apply daily deduction to the full day total for threshold check
+                const totalAllDayAfterDailyDeduction = totalAllDay - dailyDeductionForCode;
+                
+                // Apply threshold to the full day total after daily deduction
+                const valueInEuros = totalAllDayAfterDailyDeduction / 100;
                 let meetsThreshold = false;
                 if (isSuper4) {
                     if (e.codeLength === 4) meetsThreshold = valueInEuros >= 1.00;
@@ -1801,16 +1809,22 @@ export class TicketService extends Service implements ITicketService {
                 }
                 if (!meetsThreshold) continue;
 
-                // Calculate deduction directly on the window value
-                const windowCalc = this.calculateDeduction(e.codeLength, e.value, group.gameIds);
+                // Apply daily deduction to the window value
+                const windowValueAfterDailyDeduction = e.value - dailyDeductionForCode;
+                
+                // Skip codes with zero or negative window value after daily deduction
+                if (windowValueAfterDailyDeduction <= 0) continue;
 
-                // Skip codes with zero or negative window value or final value
-                if (e.value <= 0 || windowCalc.finalValue <= 0) continue;
+                // Calculate deduction on the window value after daily deduction
+                const windowCalc = this.calculateDeduction(e.codeLength, windowValueAfterDailyDeduction, group.gameIds);
+
+                // Skip codes with zero or negative final value
+                if (windowCalc.finalValue <= 0) continue;
 
                 entriesDetailed.push({ 
                     code: e.code, 
                     codeLength: e.codeLength, 
-                    value: e.value, 
+                    value: windowValueAfterDailyDeduction, 
                     deduction: windowCalc.deduction, 
                     final: windowCalc.finalValue 
                 });
@@ -1822,12 +1836,15 @@ export class TicketService extends Service implements ITicketService {
             }
 
             // Calculate daily deduction for this game (will be shown separately)
-            const dailyTotal = dailyTotals.get(gameID) || 0;
+            // Sum up all daily deductions for codes that appear in this game
+            const dailyTotal = Array.from(dailyTotalsPerCode.entries())
+                .filter(([code, _]) => entriesDetailed.some(e => e.code === code))
+                .reduce((sum, [_, amount]) => sum + amount, 0);
             
-            // Calculate totals including the daily deduction
-            const totalValue = entriesDetailed.reduce((s, x) => s + x.value, 0) - dailyTotal;
+            // Calculate totals (daily deduction is already applied per code)
+            const totalValue = entriesDetailed.reduce((s, x) => s + x.value, 0);
             const deduction = entriesDetailed.reduce((s, x) => s + x.deduction, 0);
-            const finalValue = entriesDetailed.reduce((s, x) => s + x.final, 0) - dailyTotal;
+            const finalValue = entriesDetailed.reduce((s, x) => s + x.final, 0);
 
             // Create the "Vaste lijst" entry separately
             const vasteLijstEntry = dailyTotal > 0 ? {

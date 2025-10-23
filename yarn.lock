@@ -3289,8 +3289,10 @@ babel-preset-jest@^29.6.3:
   dependencies:
     "@prisma/client" "6.9.0"
     "@prisma/extension-accelerate" "^2.0.0"
+    "@types/pdfkit" "^0.17.2"
     exceljs "^4.4.0"
     luxon "^3.7.1"
+    pdfkit "^0.17.1"
     tsconfig-paths "^4.2.0"
     uuid "^11.1.0"
 
