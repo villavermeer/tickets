@@ -2146,14 +2146,14 @@ export class TicketService extends Service implements ITicketService {
         const isNoonGame =
             gameName === "Philipsburg noon" || gameName === "Smart noon";
 
-        // 17 : 00 every day for “noon” games
+        // 16 : 00 every day for "noon" games
         if (isNoonGame) {
-            return now.set({ hour: 17, minute: 0, second: 0, millisecond: 0 });
+            return now.set({ hour: 16, minute: 0, second: 0, millisecond: 0 });
         }
 
-        // 19 : 00 on Sunday for the “evening / regular” games
+        // 18 : 00 on Sunday for the "evening / regular" games
         if (isSunday) {
-            return now.set({ hour: 19, minute: 0, second: 0, millisecond: 0 });
+            return now.set({ hour: 18, minute: 0, second: 0, millisecond: 0 });
         }
 
         // 24 : 00 (00 : 00 next day) Mon-Sat for those games
