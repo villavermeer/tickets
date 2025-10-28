@@ -499,7 +499,7 @@ class RaffleService extends Service implements IRaffleService {
                             type: BalanceActionType.PRIZE,
                             amount: -prizeAmount, // Negative to add to balance
                             reference,
-                            created: ticket.created // Use ticket creation date
+                            created: date // Use raffle processing date for consistency
                         }
                     });
 
