@@ -1340,26 +1340,14 @@ export class TicketService extends Service implements ITicketService {
             }
         });
 
-        // Calculate commission (provisie) for each user based on their tickets
-        // Note: This is in addition to any PROVISION balance actions already processed above
-        const userCommissionMap = new Map(users.map(u => [u.id, u.commission]));
-        tickets.forEach((ticket) => {
-            const entry = byUser.get(ticket.creatorID);
-            if (!entry) {
-                return;
-            }
+        // Note: We only use PROVISION balance actions from the database.
+        // Commission calculation from tickets would be double-counting since 
+        // PROVISION balance actions are created separately by raffle scripts.
 
-            const commission = userCommissionMap.get(ticket.creatorID) ?? 0;
-            const gameCount = ticket.games.length;
-            const totalValue = ticket.codes.reduce((sum, code) => sum + (code.value * gameCount), 0);
-            const provisie = (totalValue * commission) / 100;
-
-            entry.provisie += provisie;
-        });
-
-        // Calculate end balance using the formula: (Vorig saldo - correctie - Uitbetaling) + inleg - prijzen - provisie = eind saldo
+        // Calculate end balance: opening + corrections - payouts + ticket sales - prizes + provision
+        // Note: provision is negative, so adding it subtracts from balance
         byUser.forEach((row) => {
-            row.eindSaldo = (row.vorigSaldo - row.correctie - row.uitbetaling) + row.inleg - row.prijs - row.provisie;
+            row.eindSaldo = row.vorigSaldo + row.correctie - row.uitbetaling + row.inleg - row.prijs + row.provisie;
         });
 
         const workbook = new ExcelJS.Workbook();
