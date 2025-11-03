@@ -160,9 +160,9 @@ export class TicketService extends Service implements ITicketService {
             throw new ValidationError("Er is iets misgegaan bij het aanmaken van het ticket.");
         }
 
-        // Check daily limits for all codes (skip for admin accounts)
+        // Check daily limits for all codes (skip for admin accounts and daily tickets)
         const user = Context.get("user");
-        if (user.role !== 'ADMIN') {
+        if (user.role !== 'ADMIN' && !data.relayed) {
             await this.checkDailyLimits(data.codes, data.games, data.runnerID, nowNL);
         }
 
@@ -304,19 +304,31 @@ export class TicketService extends Service implements ITicketService {
             );
             
             // Check daily limits for new codes (only if there are new codes to create)
+            // Skip limit check if this ticket already has daily codes (daily tickets don't count towards limits)
             if (codesToCreate.length > 0) {
-                // Get the current games for this ticket (use updated games if provided, otherwise existing)
-                let currentGames = data.games;
-                if (!currentGames) {
-                    const existingTicketGames = await this.db.ticketGame.findMany({
-                        where: { ticketID: id },
-                        select: { gameID: true }
-                    });
-                    currentGames = existingTicketGames.map(tg => tg.gameID);
+                // Check if this ticket already has any daily codes
+                const hasDailyCodes = await this.db.code.findFirst({
+                    where: { 
+                        ticketID: id,
+                        daily: true
+                    }
+                });
+
+                // Only check limits if this ticket doesn't have daily codes
+                if (!hasDailyCodes) {
+                    // Get the current games for this ticket (use updated games if provided, otherwise existing)
+                    let currentGames = data.games;
+                    if (!currentGames) {
+                        const existingTicketGames = await this.db.ticketGame.findMany({
+                            where: { ticketID: id },
+                            select: { gameID: true }
+                        });
+                        currentGames = existingTicketGames.map(tg => tg.gameID);
+                    }
+                    
+                    const nowNL = DateTime.now().setZone("Europe/Amsterdam");
+                    await this.checkDailyLimits(codesToCreate, currentGames, ticket.creatorID, nowNL);
                 }
-                
-                const nowNL = DateTime.now().setZone("Europe/Amsterdam");
-                await this.checkDailyLimits(codesToCreate, currentGames, ticket.creatorID, nowNL);
             }
 
             // Delete removed codes
@@ -2505,6 +2517,7 @@ export class TicketService extends Service implements ITicketService {
                         const aggregate = await this.db.code.aggregate({
                             where: {
                                 code: codeString,
+                                daily: false, // Exclude daily tickets from limit calculations
                                 ticket: ticketWhereForGame
                             },
                             _sum: { value: true }
@@ -2535,6 +2548,7 @@ export class TicketService extends Service implements ITicketService {
                         const aggregate = await this.db.code.aggregate({
                             where: {
                                 code: codeString,
+                                daily: false, // Exclude daily tickets from limit calculations
                                 ticket: {
                                     ...ticketWhereForGame,
                                     creatorID: runnerID
