@@ -463,7 +463,7 @@ class RaffleService extends Service implements IRaffleService {
                 },
                 include: {
                     codes: {
-                        select: { code: true, value: true }
+                        select: { id: true, code: true, value: true }
                     },
                     creator: {
                         select: { id: true }
@@ -474,21 +474,39 @@ class RaffleService extends Service implements IRaffleService {
             console.debug(`Found ${allTickets.length} tickets for game ${gameID}`);
 
             // Process each ticket - check each code against winning codes
+            // Group by code to sum prizes for duplicate codes in the same ticket
             for (const ticket of allTickets) {
+                // Group codes by code string to handle duplicates
+                const codesByString = new Map<string, Array<{ id: number; code: string; value: number }>>();
                 for (const ticketCode of ticket.codes) {
+                    const codeStr = ticketCode.code;
+                    if (!codesByString.has(codeStr)) {
+                        codesByString.set(codeStr, []);
+                    }
+                    codesByString.get(codeStr)!.push(ticketCode);
+                }
+
+                // Process each unique code (summing prizes for duplicates)
+                for (const [codeStr, codeInstances] of codesByString) {
+                    // Sum stake values for all instances of this code
+                    const totalStake = codeInstances.reduce((sum, instance) => sum + instance.value, 0);
+                    
+                    // Calculate prize for this code using total stake
+                    const firstInstance = codeInstances[0];
                     const prizeAmount = this.calculatePrizeAmount(
-                        ticketCode.code,
-                        ticketCode.value,
+                        firstInstance.code,
+                        totalStake,
                         gameID,
                         winningCodes
                     );
 
                     if (prizeAmount <= 0) continue;
 
-                    // Use the first raffle ID for this game (or the ticket's raffle if we can determine it)
-                    // In practice, there should only be one raffle per game per day, but we handle multiple
+                    // Use the first raffle ID for this game
                     const raffleID = raffleIDs[0];
-                    const reference = `PRIZE:${raffleID}:${ticket.id}:${ticketCode.code}`;
+                    // Use the first code instance ID to make reference unique per code instance
+                    const codeID = codeInstances[0].id;
+                    const reference = `PRIZE:${raffleID}:${ticket.id}:${codeID}`;
 
                     // Check if prize action already exists
                     const existingPrize = await this.db.balanceAction.findFirst({
@@ -496,11 +514,11 @@ class RaffleService extends Service implements IRaffleService {
                     });
 
                     if (existingPrize) {
-                        console.debug(`Prize action already exists for ticket ${ticket.id}, code ${ticketCode.code}, amount: ${existingPrize.amount/100} EUR`);
+                        console.debug(`Prize action already exists for ticket ${ticket.id}, code ${firstInstance.code} (codeID ${codeID}), amount: ${existingPrize.amount/100} EUR`);
                         continue;
                     }
 
-                    console.debug(`Creating prize action for ticket ${ticket.id}, code ${ticketCode.code}, amount: ${prizeAmount/100} EUR, user: ${ticket.creator.id}`);
+                    console.debug(`Creating prize action for ticket ${ticket.id}, code ${firstInstance.code} (${codeInstances.length} instances, total stake: ${totalStake/100} EUR), amount: ${prizeAmount/100} EUR, user: ${ticket.creator.id}`);
 
                     // Get or create balance for the user
                     let balance = await this.db.balance.findUnique({
@@ -535,7 +553,7 @@ class RaffleService extends Service implements IRaffleService {
                         }
                     });
 
-                    console.debug(`Created prize action for ticket ${ticket.id}, code ${ticketCode.code}: ${prizeAmount/100} EUR`);
+                    console.debug(`Created prize action for ticket ${ticket.id}, code ${firstInstance.code}: ${prizeAmount/100} EUR`);
                 }
             }
         }

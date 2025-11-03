@@ -205,6 +205,9 @@ export class TicketService extends Service implements ITicketService {
                 });
             }
 
+            // Create balance action for ticket sale
+            await this.createTicketSaleBalanceAction(tx, ticket.id, data.runnerID, ticket.created);
+
             return ticket;
         });
     }
@@ -335,8 +338,17 @@ export class TicketService extends Service implements ITicketService {
 
         // Fetch the updated ticket to return
         const finalTicket = await this.db.ticket.findUnique({
-            where: { id }
+            where: { id },
+            include: {
+                codes: { select: { value: true } },
+                games: { select: { gameID: true } }
+            }
         });
+
+        // Update balance action if ticket value changed
+        if (finalTicket && (data.games || data.codes)) {
+            await this.updateTicketSaleBalanceAction(id, finalTicket.creatorID);
+        }
 
         return finalTicket
     }
@@ -1370,9 +1382,18 @@ export class TicketService extends Service implements ITicketService {
             }
         });
 
-        // Note: We only use PROVISION balance actions from the database.
-        // Commission calculation from tickets would be double-counting since 
-        // PROVISION balance actions are created separately by raffle scripts.
+        // Calculate provision from Inleg and commission percentage for each user
+        // Provision is calculated as a percentage of Inleg for the period
+        // Provision should be shown as positive in the export, but is negative for balance calculation
+        byUser.forEach((row, userId) => {
+            const user = users.find(u => u.id === userId);
+            if (user && row.inleg > 0) {
+                // Calculate provision as percentage of Inleg
+                const provisionAmount = Math.round((row.inleg * (user.commission || 0)) / 100);
+                // Always use calculated value from Inleg (not balance actions)
+                row.provisie = -provisionAmount; // Negative for balance calculation
+            }
+        });
 
         // Calculate end balance: opening + corrections - payouts + ticket sales - prizes + provision
         // Note: provision is negative, so adding it subtracts from balance
@@ -1413,7 +1434,7 @@ export class TicketService extends Service implements ITicketService {
                     correctie: row.correctie / 100,
                     uitbetaling: row.uitbetaling / 100,
                     prijs: row.prijs / 100,
-                    provisie: row.provisie / 100,
+                    provisie: Math.abs(row.provisie) / 100, // Display as positive value
                     eindSaldo: row.eindSaldo / 100
                 });
             });
@@ -1427,7 +1448,7 @@ export class TicketService extends Service implements ITicketService {
                 correctie: rows.reduce((sum, row) => sum + row.correctie, 0) / 100,
                 uitbetaling: rows.reduce((sum, row) => sum + row.uitbetaling, 0) / 100,
                 prijs: rows.reduce((sum, row) => sum + row.prijs, 0) / 100,
-                provisie: rows.reduce((sum, row) => sum + row.provisie, 0) / 100,
+                provisie: rows.reduce((sum, row) => sum + Math.abs(row.provisie), 0) / 100, // Display as positive value
                 eindSaldo: rows.reduce((sum, row) => sum + row.eindSaldo, 0) / 100
             });
         }
@@ -1693,6 +1714,9 @@ export class TicketService extends Service implements ITicketService {
         await this.db.ticketGame.deleteMany({
             where: { ticketID: id }
         });
+
+        // Delete balance action for this ticket
+        await this.deleteTicketSaleBalanceAction(id);
 
         await this.db.ticket.delete({
             where: { id }
@@ -2553,6 +2577,153 @@ export class TicketService extends Service implements ITicketService {
             }).join(', ');
             throw new ValidationError(`Je hebt de persoonlijke limiet overschreden voor: ${details}`);
         }
+    }
+
+    /**
+     * Calculate ticket value (sum of all code values multiplied by number of games)
+     */
+    private calculateTicketValue(codes: Array<{ value: number }>, gameCount: number): number {
+        return codes.reduce((sum, code) => sum + (code.value * gameCount), 0);
+    }
+
+    /**
+     * Create or update balance action for ticket sale
+     */
+    private async createTicketSaleBalanceAction(
+        tx: any,
+        ticketID: number,
+        userID: number,
+        created: Date
+    ): Promise<void> {
+        // Get ticket with codes and games to calculate value
+        const ticket = await tx.ticket.findUnique({
+            where: { id: ticketID },
+            include: {
+                codes: { select: { value: true } },
+                games: { select: { gameID: true } }
+            }
+        });
+
+        if (!ticket) return;
+
+        const gameCount = ticket.games.length;
+        const amount = this.calculateTicketValue(ticket.codes, gameCount);
+
+        // Get or create balance for the user
+        let balance = await tx.balance.findUnique({
+            where: { userID }
+        });
+
+        if (!balance) {
+            balance = await tx.balance.create({
+                data: { userID, balance: 0 }
+            });
+        }
+
+        // Create balance action
+        await tx.balanceAction.create({
+            data: {
+                balanceID: balance.id,
+                type: BalanceActionType.TICKET_SALE,
+                amount: amount,
+                reference: `TICKET_SALE:${ticketID}`,
+                created: created
+            }
+        });
+
+        // Update balance
+        await tx.balance.update({
+            where: { id: balance.id },
+            data: { balance: { increment: amount } }
+        });
+    }
+
+    /**
+     * Update balance action when ticket is updated
+     */
+    private async updateTicketSaleBalanceAction(ticketID: number, userID: number): Promise<void> {
+        // Get ticket with codes and games to calculate value
+        const ticket = await this.db.ticket.findUnique({
+            where: { id: ticketID },
+            include: {
+                codes: { select: { value: true } },
+                games: { select: { gameID: true } }
+            }
+        });
+
+        if (!ticket) return;
+
+        const gameCount = ticket.games.length;
+        const newAmount = this.calculateTicketValue(ticket.codes, gameCount);
+
+        // Find existing balance action
+        const balance = await this.db.balance.findUnique({
+            where: { userID },
+            include: {
+                actions: {
+                    where: {
+                        type: BalanceActionType.TICKET_SALE,
+                        reference: `TICKET_SALE:${ticketID}`
+                    }
+                }
+            }
+        });
+
+        if (!balance || balance.actions.length === 0) {
+            // Create new balance action if it doesn't exist
+            await this.db.$transaction(async (tx) => {
+                await this.createTicketSaleBalanceAction(tx, ticketID, userID, ticket.created);
+            });
+            return;
+        }
+
+        const existingAction = balance.actions[0];
+        const amountDifference = newAmount - existingAction.amount;
+
+        if (amountDifference !== 0) {
+            // Update balance action and adjust balance
+            await this.db.$transaction(async (tx) => {
+                await tx.balanceAction.update({
+                    where: { id: existingAction.id },
+                    data: { amount: newAmount }
+                });
+
+                await tx.balance.update({
+                    where: { id: balance.id },
+                    data: { balance: { increment: amountDifference } }
+                });
+            });
+        }
+    }
+
+    /**
+     * Delete balance action when ticket is deleted
+     */
+    private async deleteTicketSaleBalanceAction(ticketID: number): Promise<void> {
+        // Find balance action for this ticket
+        const balanceAction = await this.db.balanceAction.findFirst({
+            where: {
+                type: BalanceActionType.TICKET_SALE,
+                reference: `TICKET_SALE:${ticketID}`
+            },
+            include: {
+                balance: true
+            }
+        });
+
+        if (!balanceAction) return;
+
+        // Delete balance action and adjust balance
+        await this.db.$transaction(async (tx) => {
+            await tx.balanceAction.delete({
+                where: { id: balanceAction.id }
+            });
+
+            await tx.balance.update({
+                where: { id: balanceAction.balanceID },
+                data: { balance: { decrement: balanceAction.amount } }
+            });
+        });
     }
 }
 
