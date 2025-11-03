@@ -173,7 +173,7 @@ class RaffleService extends Service implements IRaffleService {
             select: {
                 gameID: true,
                 game: true,                 // full Game object
-                codes: { select: { value: true } },
+                codes: { select: { value: true, code: true } },
             },
         });
 
@@ -184,27 +184,28 @@ class RaffleService extends Service implements IRaffleService {
             return [];   // no draws that day
         }
 
-        // ── 3 ── group winning code values by game
+        // ── 3 ── group winning code values and strings by game
         console.debug('Grouping winning code values by game...');
         const byGame: Map<
             number,
-            { game: typeof raffles[number]["game"]; winningValues: number[] }
+            { game: typeof raffles[number]["game"]; winningValues: number[]; winningCodes: string[] }
         > = new Map();
 
         for (const r of raffles) {
             const entry =
                 byGame.get(r.gameID) ??
-                { game: r.game, winningValues: [] };
+                { game: r.game, winningValues: [], winningCodes: [] };
             entry.winningValues.push(...r.codes.map(c => c.value));
+            entry.winningCodes.push(...r.codes.map(c => c.code));
             byGame.set(r.gameID, entry);
         }
 
         console.debug(`Games with raffles: ${byGame.size}`);
 
-        // ── 4 ── for each game, pull that day’s tickets that hit ≥1 winning code
+        // ── 4 ── for each game, pull that day’s tickets and then filter those that hit ≥1 winning code
         const result: { game: typeof raffles[number]["game"]; tickets: any[] }[] = [];
 
-        for (const [gameID, { game, winningValues }] of byGame) {
+        for (const [gameID, { game, winningValues, winningCodes }] of byGame) {
             console.debug(`Processing gameID: ${gameID} with winning values: ${winningValues}`);
             if (winningValues.length === 0) {
                 result.push({ game, tickets: [] });
@@ -213,24 +214,30 @@ class RaffleService extends Service implements IRaffleService {
             }
 
             console.debug(`Fetching tickets for gameID: ${gameID}...`);
-            const tickets = await this.db.ticket.findMany({
+            const ticketsAll = await this.db.ticket.findMany({
                 where: {
                     created: { gte: startOfDay, lte: endOfDay },
                     // ticket must belong to this game
                     games: { some: { gameID } },
-                    // …and contain at least one winning code
-                    codes: { some: { value: { in: winningValues } } },
                 },
                 select: {
                     id: true,
                     name: true,
                     creatorID: true,
                     codes: {
-                        where: { value: { in: winningValues } }, // keep only winning codes
                         select: { code: true, value: true },
                     },
                 },
             });
+
+            // Filter to tickets with at least one code that ends with a winning code
+            const tickets = ticketsAll
+                .map(t => {
+                    const matchingCodes = t.codes.filter(c => winningCodes.some((w: string) => w.length > 0 && c.code.endsWith(w)));
+                    if (matchingCodes.length === 0) return null;
+                    return { ...t, codes: matchingCodes };
+                })
+                .filter(Boolean) as any[];
 
             console.debug(`Number of winning tickets found for gameID ${gameID}: ${tickets.length}`);
             result.push({ game, tickets });
@@ -408,12 +415,23 @@ class RaffleService extends Service implements IRaffleService {
 
         console.debug(`Found ${raffles.length} raffles for this date`);
 
-        // Group winning codes by game
-        const winningCodesByGame = new Map<number, Array<{ code: string; order: number }>>();
+        // Group winning codes by game, keeping track of raffle IDs
+        const winningCodesByGame = new Map<number, { 
+            winningCodes: Array<{ code: string; order: number }>;
+            raffleIDs: number[];
+        }>();
         
         for (const raffle of raffles) {
             if (!winningCodesByGame.has(raffle.gameID)) {
-                winningCodesByGame.set(raffle.gameID, []);
+                winningCodesByGame.set(raffle.gameID, {
+                    winningCodes: [],
+                    raffleIDs: []
+                });
+            }
+            
+            const gameData = winningCodesByGame.get(raffle.gameID)!;
+            if (!gameData.raffleIDs.includes(raffle.id)) {
+                gameData.raffleIDs.push(raffle.id);
             }
             
             const codeToOrder = new Map<string, number>();
@@ -421,29 +439,30 @@ class RaffleService extends Service implements IRaffleService {
                 if (!codeToOrder.has(code.code)) {
                     codeToOrder.set(code.code, codeToOrder.size + 1);
                 }
-                winningCodesByGame.get(raffle.gameID)!.push({
-                    code: code.code,
-                    order: codeToOrder.get(code.code)!
-                });
+                // Only add if not already added (avoid duplicates)
+                if (!gameData.winningCodes.some(wc => wc.code === code.code)) {
+                    gameData.winningCodes.push({
+                        code: code.code,
+                        order: codeToOrder.get(code.code)!
+                    });
+                }
             }
         }
 
         // Process each game's winning tickets
-        for (const [gameID, winningCodes] of winningCodesByGame) {
+        for (const [gameID, { winningCodes, raffleIDs }] of winningCodesByGame) {
             if (winningCodes.length === 0) continue;
 
             const winningValues = winningCodes.map(wc => parseInt(wc.code, 10));
             
-            // Find all winning tickets for this game
-            const winningTickets = await this.db.ticket.findMany({
+            // Find all tickets for this game on this day
+            const allTickets = await this.db.ticket.findMany({
                 where: {
                     created: { gte: startOfDay, lte: endOfDay },
-                    games: { some: { gameID } },
-                    codes: { some: { value: { in: winningValues } } }
+                    games: { some: { gameID } }
                 },
                 include: {
                     codes: {
-                        where: { value: { in: winningValues } },
                         select: { code: true, value: true }
                     },
                     creator: {
@@ -452,10 +471,10 @@ class RaffleService extends Service implements IRaffleService {
                 }
             });
 
-            console.debug(`Found ${winningTickets.length} winning tickets for game ${gameID}`);
+            console.debug(`Found ${allTickets.length} tickets for game ${gameID}`);
 
-            // Process each winning ticket
-            for (const ticket of winningTickets) {
+            // Process each ticket - check each code against winning codes
+            for (const ticket of allTickets) {
                 for (const ticketCode of ticket.codes) {
                     const prizeAmount = this.calculatePrizeAmount(
                         ticketCode.code,
@@ -466,7 +485,10 @@ class RaffleService extends Service implements IRaffleService {
 
                     if (prizeAmount <= 0) continue;
 
-                    const reference = `PRIZE:${raffles.find(r => r.gameID === gameID)?.id}:${ticket.id}:${ticketCode.code}`;
+                    // Use the first raffle ID for this game (or the ticket's raffle if we can determine it)
+                    // In practice, there should only be one raffle per game per day, but we handle multiple
+                    const raffleID = raffleIDs[0];
+                    const reference = `PRIZE:${raffleID}:${ticket.id}:${ticketCode.code}`;
 
                     // Check if prize action already exists
                     const existingPrize = await this.db.balanceAction.findFirst({
@@ -474,9 +496,11 @@ class RaffleService extends Service implements IRaffleService {
                     });
 
                     if (existingPrize) {
-                        console.debug(`Prize action already exists for ticket ${ticket.id}, code ${ticketCode.code}`);
+                        console.debug(`Prize action already exists for ticket ${ticket.id}, code ${ticketCode.code}, amount: ${existingPrize.amount/100} EUR`);
                         continue;
                     }
+
+                    console.debug(`Creating prize action for ticket ${ticket.id}, code ${ticketCode.code}, amount: ${prizeAmount/100} EUR, user: ${ticket.creator.id}`);
 
                     // Get or create balance for the user
                     let balance = await this.db.balance.findUnique({
@@ -499,7 +523,7 @@ class RaffleService extends Service implements IRaffleService {
                             type: BalanceActionType.PRIZE,
                             amount: -prizeAmount, // Negative to add to balance
                             reference,
-                            created: date // Use raffle processing date for consistency
+                            created: endOfDay // Use end of day so it appears on the correct date
                         }
                     });
 
@@ -549,10 +573,15 @@ class RaffleService extends Service implements IRaffleService {
                 : ((MULTIPLIERS.DEFAULT as any)[order]?.[codeLength] ?? 0);
 
             if (multiplier > 0) {
-                total += stakeValue * multiplier;
+                const prize = stakeValue * multiplier;
+                total += prize;
+                console.debug(`  Matched winning code ${winningCode} (order ${order}) with played code ${playedCode}: ${prize/100} EUR`);
             }
         }
 
+        if (total > 0) {
+            console.debug(`  Total prize for code ${playedCode}: ${total/100} EUR`);
+        }
         return total;
     }
 }

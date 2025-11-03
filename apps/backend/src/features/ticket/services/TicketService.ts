@@ -727,6 +727,24 @@ export class TicketService extends Service implements ITicketService {
                 const bottomLimit = doc.page.height - doc.page.margins.bottom;
                 const rowHeight = 22;
                 
+                // Track page numbers
+                let pageNumber = 0;
+                const drawPageNumber = () => {
+                    pageNumber++;
+                    const pageText = `Pagina ${pageNumber}`;
+                    doc.save();
+                    doc.font('Helvetica').fontSize(9).fillColor('#666666');
+                    const pageWidth = doc.page.width;
+                    const pageHeight = doc.page.height;
+                    const bottomMargin = doc.page.margins.bottom;
+                    // Position at bottom center of the page
+                    doc.text(pageText, left, pageHeight - bottomMargin + 10, { 
+                        width: usableWidth,
+                        align: 'center' 
+                    });
+                    doc.restore();
+                };
+                
                 // Calculate column widths based on actual text content
                 const calculateColumnWidths = () => {
                     let maxCodeWidth = 0;
@@ -810,6 +828,7 @@ export class TicketService extends Service implements ITicketService {
 
                 if (!relayableTickets.length) {
                     renderReportHeader('Geen relaybare tickets gevonden');
+                    drawPageNumber();
                     doc.end();
                     return;
                 }
@@ -845,6 +864,9 @@ export class TicketService extends Service implements ITicketService {
                             doc.addPage();
                         }
                         isFirstPage = false;
+                        
+                        // Draw page number at the bottom of the page
+                        drawPageNumber();
 
                         const subtitle = pageForChunk > 0 ? `${combinationTitle} (vervolg)` : combinationTitle;
                         renderReportHeader(subtitle);
@@ -871,6 +893,7 @@ export class TicketService extends Service implements ITicketService {
                             const rowsNeeded = dailyDeduction ? 2 : 1;
                             if (y + (rowHeight * rowsNeeded) > bottomLimit) {
                                 doc.addPage();
+                                drawPageNumber();
                                 renderReportHeader(`${combinationTitle} (vervolg)`);
                                 y = doc.y;
                                 drawTableHeader(y);
@@ -889,6 +912,7 @@ export class TicketService extends Service implements ITicketService {
 
                             if (y + 24 > bottomLimit) {
                                 doc.addPage();
+                                drawPageNumber();
                                 renderReportHeader(`${combinationTitle} (vervolg)`);
                                 y = doc.y;
                             } else {
@@ -930,6 +954,9 @@ export class TicketService extends Service implements ITicketService {
                             doc.addPage();
                         }
                         isFirstPage = false;
+                        
+                        // Draw page number at the bottom of the page
+                        drawPageNumber();
 
                         const subtitle = pageForSuper4 > 0 ? `${combinationTitle} (vervolg)` : combinationTitle;
                         renderReportHeader(subtitle);
@@ -956,6 +983,7 @@ export class TicketService extends Service implements ITicketService {
                             const rowsNeeded = super4DailyDeduction ? 2 : 1;
                             if (y + (rowHeight * rowsNeeded) > bottomLimit) {
                                 doc.addPage();
+                                drawPageNumber();
                                 renderReportHeader(`${combinationTitle} (vervolg)`);
                                 y = doc.y;
                                 drawTableHeader(y);
@@ -994,6 +1022,7 @@ export class TicketService extends Service implements ITicketService {
                     
                     if (doc.y + spaceNeeded > bottomLimit) {
                         doc.addPage();
+                        drawPageNumber();
                         isFirstPage = false;
                     } else if (!isFirstPage) {
                         // Add some spacing if we're continuing on the same page
@@ -1043,6 +1072,7 @@ export class TicketService extends Service implements ITicketService {
                     if (codesByGame.size > 1) {
                         if (y + rowHeight > bottomLimit) {
                             doc.addPage();
+                            drawPageNumber();
                             renderReportHeader('Gespeelde daglijkse tickets (vervolg)');
                             y = doc.y;
                         }
