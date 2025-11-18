@@ -196,6 +196,8 @@ export class TicketService extends Service implements ITicketService {
             });
 
             // Create all TicketGame records in a single operation to avoid sequence issues
+            // Note: The Prisma middleware in prisma.ts automatically creates TICKET_SALE balance actions
+            // when TicketGame.createMany is called, so we don't need to call createTicketSaleBalanceAction here
             if (data.games.length > 0) {
                 await tx.ticketGame.createMany({
                     data: data.games.map((game) => ({
@@ -204,9 +206,6 @@ export class TicketService extends Service implements ITicketService {
                     })),
                 });
             }
-
-            // Create balance action for ticket sale
-            await this.createTicketSaleBalanceAction(tx, ticket.id, data.runnerID, ticket.created);
 
             return ticket;
         });
@@ -881,9 +880,10 @@ export class TicketService extends Service implements ITicketService {
 
                     let entryIndex = 0;
                     let pageForChunk = 0;
+                    let hasRenderedTotal = false;
                     const combinationTitle = `${chunk.gameCombination.join(', ')}`;
 
-                    while (entryIndex < regularEntries.length || pageForChunk === 0) {
+                    while (entryIndex < regularEntries.length || !hasRenderedTotal) {
                         if (!isFirstPage) {
                             doc.addPage();
                         }
@@ -912,7 +912,7 @@ export class TicketService extends Service implements ITicketService {
                         }
 
                         // After all regular entries are rendered, add "Vaste lijst" and total row
-                        if (entryIndex >= regularEntries.length) {
+                        if (entryIndex >= regularEntries.length && !hasRenderedTotal) {
                             // Check if we have room for "Vaste lijst" row (if exists) and total row
                             const rowsNeeded = dailyDeduction ? 2 : 1;
                             if (y + (rowHeight * rowsNeeded) > bottomLimit) {
@@ -942,6 +942,8 @@ export class TicketService extends Service implements ITicketService {
                             } else {
                                 y += 12;
                             }
+                            
+                            hasRenderedTotal = true;
                         }
 
                         pageForChunk++;
@@ -965,15 +967,17 @@ export class TicketService extends Service implements ITicketService {
                         }
                     });
 
-                    const super4Total = super4Chunks.reduce((sum, chunk) => 
-                        sum + chunk.entries.reduce((entrySum, entry) => entrySum + entry.final, 0), 0
-                    );
+                    // Calculate total: sum of all regular entries (excluding "Vaste lijst")
+                    // The "Vaste lijst" will be shown separately and is already negative
+                    const super4Total = allSuper4Entries.reduce((sum, entry) => sum + entry.final, 0) +
+                        (super4DailyDeduction ? super4DailyDeduction.final : 0);
                     const combinationTitle = 'Super 4';
 
                     let entryIndex = 0;
                     let pageForSuper4 = 0;
+                    let hasRenderedSuper4Total = false;
 
-                    while (entryIndex < allSuper4Entries.length || pageForSuper4 === 0) {
+                    while (entryIndex < allSuper4Entries.length || !hasRenderedSuper4Total) {
                         if (!isFirstPage) {
                             doc.addPage();
                         }
@@ -1002,7 +1006,7 @@ export class TicketService extends Service implements ITicketService {
                         }
 
                         // After all regular entries are rendered, add "Vaste lijst" and total row
-                        if (entryIndex >= allSuper4Entries.length) {
+                        if (entryIndex >= allSuper4Entries.length && !hasRenderedSuper4Total) {
                             // Check if we have room for "Vaste lijst" row (if exists) and total row
                             const rowsNeeded = super4DailyDeduction ? 2 : 1;
                             if (y + (rowHeight * rowsNeeded) > bottomLimit) {
@@ -1023,6 +1027,8 @@ export class TicketService extends Service implements ITicketService {
                             // Render total row
                             drawTotalRow(super4Total, y);
                             y += rowHeight;
+                            
+                            hasRenderedSuper4Total = true;
                         }
 
                         pageForSuper4++;
