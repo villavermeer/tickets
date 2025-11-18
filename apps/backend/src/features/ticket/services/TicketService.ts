@@ -720,406 +720,271 @@ export class TicketService extends Service implements ITicketService {
         return buffer;
     }
 
-    public exportRelayableTicketsPDF = async (start: string, end: string, commit?: boolean, _compact?: boolean, combineAcrossGames?: boolean): Promise<Buffer> => {
+    public exportRelayableTicketsPDF = async (
+        start: string,
+        end: string,
+        commit?: boolean,
+        _compact?: boolean,
+        combineAcrossGames?: boolean
+    ): Promise<Buffer> => {
         console.debug("Exporting relayable tickets to PDF with data:", { start, end, commit });
         const relayableTickets = await this.getRelayableTickets(start, end, commit, combineAcrossGames);
         console.debug(`Fetched ${relayableTickets.length} relayable ticket combinations for PDF export.`);
-
-        // Pre-calculate daily codes for the summary
+    
+        // Daily tickets (vaste nummers)
         const startDate = this.parseDateParameter(start, true);
         const endDate = this.parseDateParameter(end, false);
         const amsterdamStart = DateTime.fromJSDate(startDate).setZone('Europe/Amsterdam');
         const dayStart = amsterdamStart.startOf('day').toUTC().toJSDate();
         const dayEnd = amsterdamStart.endOf('day').toUTC().toJSDate();
         const dailyCodesForDisplay = await this.getDailyCodesForDisplay(dayStart, dayEnd);
-
+    
         return new Promise((resolve, reject) => {
-            try {
-                const doc = new PDFDocument({
-                    size: 'A4',
-                    margins: { top: 40, bottom: 40, left: 40, right: 40 }
+            const doc = new PDFDocument({
+                size: 'A4',
+                margins: { top: 40, bottom: 40, left: 40, right: 40 }
+            });
+    
+            const chunks: Buffer[] = [];
+            doc.on('data', (chunk: Buffer) => chunks.push(chunk));
+            doc.on('end', () => resolve(Buffer.concat(chunks)));
+            doc.on('error', reject);
+    
+            const left = doc.page.margins.left;
+            const top = doc.page.margins.top;
+            const right = doc.page.width - doc.page.margins.right;
+            const usableWidth = right - left;
+            const bottomLimit = doc.page.height - doc.page.margins.bottom;
+    
+            const rowHeight = 20;
+            const titleHeight = 18;
+    
+            // 1 column for code/description, 1 for amount
+            const codeColWidth = Math.round(usableWidth * 0.65);
+            const amountColWidth = usableWidth - codeColWidth;
+    
+            let y = top;
+            let isFirstSection = true;
+    
+            const drawTableHeader = (firstColLabel: string) => {
+                doc.save();
+                doc.rect(left, y, usableWidth, rowHeight).fill('#f2f4f7');
+                doc.fillColor('#000000');
+                doc.font('Helvetica-Bold').fontSize(11);
+                doc.text(firstColLabel, left + 8, y + 4, { width: codeColWidth - 16 });
+                doc.text('Bedrag', left + codeColWidth, y + 4, {
+                    width: amountColWidth - 16,
+                    align: 'right'
                 });
-
-                const chunks: Buffer[] = [];
-                doc.on('data', (chunk: Buffer) => chunks.push(chunk));
-                doc.on('end', () => resolve(Buffer.concat(chunks)));
-                doc.on('error', reject);
-
-                const left = doc.page.margins.left;
-                const usableWidth = doc.page.width - doc.page.margins.left - doc.page.margins.right;
-                const bottomLimit = doc.page.height - doc.page.margins.bottom;
-                const rowHeight = 22;
-                
-                // Track page numbers
-                let pageNumber = 0;
-                const drawPageNumber = () => {
-                    pageNumber++;
-                    const pageText = `Pagina ${pageNumber}`;
-                    doc.save();
-                    doc.font('Helvetica').fontSize(9).fillColor('#666666');
-                    const pageWidth = doc.page.width;
-                    const pageHeight = doc.page.height;
-                    const bottomMargin = doc.page.margins.bottom;
-                    // Position at bottom center of the page
-                    doc.text(pageText, left, pageHeight - bottomMargin + 10, { 
-                        width: usableWidth,
-                        align: 'center' 
-                    });
-                    doc.restore();
-                };
-                
-                // Calculate column widths based on actual text content
-                const calculateColumnWidths = () => {
-                    let maxCodeWidth = 0;
-                    let maxAmountWidth = 0;
-                    
-                    relayableTickets.forEach(chunk => {
-                        chunk.entries.forEach(entry => {
-                            // Estimate text width: approximately 6 pixels per character for Helvetica 11pt
-                            const codeTextWidth = entry.code.length * 6;
-                            const amountTextWidth = (entry.final / 100).toFixed(2).length * 6;
-                            maxCodeWidth = Math.max(maxCodeWidth, codeTextWidth);
-                            maxAmountWidth = Math.max(maxAmountWidth, amountTextWidth);
-                        });
-                    });
-                    
-                    // Add padding (16px on each side) and ensure minimum widths
-                    const minCodeWidth = 50; // Minimum width for "Code" header
-                    const minAmountWidth = 50; // Minimum width for "Bedrag" header and amounts
-                    
-                    const codeWidth = Math.max(maxCodeWidth + 32, minCodeWidth);
-                    const amountWidth = Math.max(maxAmountWidth + 32, minAmountWidth);
-                    
-                    return { codeWidth, amountWidth };
-                };
-                
-                const { codeWidth: codeColumnWidth, amountWidth: amountColumnWidth } = calculateColumnWidths();
-                const columnWidths = [codeColumnWidth, amountColumnWidth];
-                const tableWidth = codeColumnWidth + amountColumnWidth;
-                const generatedStamp = new Date().toLocaleString('nl-NL', { timeZone: 'Europe/Amsterdam' });
-
-                const renderReportHeader = (subtitle?: string) => {
-                    doc.fillColor('#000000');
-                    if (subtitle) {
-                        // Calculate a more compact width for the subtitle (max 60% of usable width)
-                        const maxSubtitleWidth = Math.min(usableWidth * 0.6, 300);
-                        doc.font('Helvetica-Bold').fontSize(10).text(subtitle, left, doc.y, { width: maxSubtitleWidth });
-                    }
-                    doc.moveDown(0.6);
-                };
-
-                const drawTableHeader = (y: number) => {
-                    doc.save();
-                    doc.rect(left, y, tableWidth, rowHeight).fill('#f2f4f7');
-                    doc.fillColor('#000000');
-                    doc.font('Helvetica-Bold').fontSize(11)
-                        .text('Code', left + 8, y + 6, { width: columnWidths[0] - 16 });
-                    doc.text('Bedrag', left + columnWidths[0], y + 6, { width: columnWidths[1] - 16, align: 'right' });
-                    doc.restore();
-                };
-
-                const drawTableRow = (entry: RelayableTicketEntry, y: number, isStriped: boolean) => {
-                    doc.save();
-                    
-                    // Special styling for "Vaste lijst" row
-                    const isVasteLijst = entry.code === 'Vaste lijst';
-                    
-                    if (isVasteLijst) {
-                        // Light yellow background for "Vaste lijst"
-                        doc.rect(left, y, tableWidth, rowHeight).fill('#fff4cc');
-                    } else if (isStriped) {
-                        doc.rect(left, y, tableWidth, rowHeight).fill('#fbfcfe');
-                    }
-                    
-                    doc.fillColor('#000000');
-                    const font = isVasteLijst ? 'Helvetica-Oblique' : 'Helvetica';
-                    doc.font(font).fontSize(11)
-                        .text(entry.code, left + 8, y + 6, { width: columnWidths[0] - 16 });
-                    doc.text((entry.final / 100).toFixed(2), left + columnWidths[0], y + 6, { width: columnWidths[1] - 16, align: 'right' });
-                    doc.restore();
-                };
-
-                const drawTotalRow = (total: number, y: number) => {
-                    doc.save();
-                    doc.rect(left, y, tableWidth, rowHeight).fill('#e8ebed');
-                    doc.fillColor('#000000');
-                    doc.font('Helvetica-Bold').fontSize(11)
-                        .text('Totaal', left + 8, y + 6, { width: columnWidths[0] - 16 });
-                    doc.text((total / 100).toFixed(2), left + columnWidths[0], y + 6, { width: columnWidths[1] - 16, align: 'right' });
-                    doc.restore();
-                };
-
-                if (!relayableTickets.length) {
-                    renderReportHeader('Geen relaybare tickets gevonden');
-                    drawPageNumber();
-                    doc.end();
-                    return;
+                doc.restore();
+                y += rowHeight;
+            };
+    
+            const drawEntryRow = (entry: RelayableTicketEntry, striped: boolean) => {
+                const isVasteLijst = entry.code === 'Vaste lijst';
+    
+                doc.save();
+                if (isVasteLijst) {
+                    doc.rect(left, y, usableWidth, rowHeight).fill('#fff4cc');
+                } else if (striped) {
+                    doc.rect(left, y, usableWidth, rowHeight).fill('#fbfcfe');
+                } else {
+                    doc.rect(left, y, usableWidth, rowHeight).fill('#ffffff');
                 }
-
-                // Separate Super 4 and non-Super 4 tickets
-                const super4Chunks: ChunkedRelayableTicket[] = [];
-                const nonSuper4Chunks: ChunkedRelayableTicket[] = [];
-                
-                relayableTickets.forEach(chunk => {
-                    const isSuper4 = chunk.gameCombination.length === 1 && chunk.gameCombination[0] === 'Super 4';
-                    if (isSuper4) {
-                        super4Chunks.push(chunk);
-                    } else {
-                        nonSuper4Chunks.push(chunk);
-                    }
+    
+                doc.fillColor('#000000');
+                doc.font(isVasteLijst ? 'Helvetica-Oblique' : 'Helvetica').fontSize(11);
+                doc.text(entry.code, left + 8, y + 4, { width: codeColWidth - 16 });
+                doc.text((entry.final / 100).toFixed(2), left + codeColWidth, y + 4, {
+                    width: amountColWidth - 16,
+                    align: 'right'
                 });
-
-                let isFirstPage = true;
-
-                // Process all non-Super4 games first
-                nonSuper4Chunks.forEach((chunk, chunkIndex) => {
-                    // Filter out "Vaste lijst" entries - they'll be rendered separately at the end
-                    const regularEntries = chunk.entries.filter(e => e.code !== 'Vaste lijst');
-                    const dailyDeduction = (chunk as any).dailyDeduction;
-                    const chunkTotal = chunk.entries.reduce((sum, entry) => sum + entry.final, 0);
-
-                    let entryIndex = 0;
-                    let pageForChunk = 0;
-                    let hasRenderedTotal = false;
-                    const combinationTitle = `${chunk.gameCombination.join(', ')}`;
-
-                    while (entryIndex < regularEntries.length || !hasRenderedTotal) {
-                        if (!isFirstPage) {
-                            doc.addPage();
-                        }
-                        isFirstPage = false;
-                        
-                        // Draw page number at the bottom of the page
-                        drawPageNumber();
-
-                        const subtitle = pageForChunk > 0 ? `${combinationTitle} (vervolg)` : combinationTitle;
-                        renderReportHeader(subtitle);
-
-                        let y = doc.y;
-                        drawTableHeader(y);
-                        y += rowHeight;
-
-                        let stripe = false;
-                        while (entryIndex < regularEntries.length) {
-                            if (y + rowHeight > bottomLimit) {
-                                break;
-                            }
-                            const entry = regularEntries[entryIndex];
-                            drawTableRow(entry, y, stripe);
-                            stripe = !stripe;
-                            y += rowHeight;
-                            entryIndex++;
-                        }
-
-                        // After all regular entries are rendered, add "Vaste lijst" and total row
-                        if (entryIndex >= regularEntries.length && !hasRenderedTotal) {
-                            // Check if we have room for "Vaste lijst" row (if exists) and total row
-                            const rowsNeeded = dailyDeduction ? 2 : 1;
-                            if (y + (rowHeight * rowsNeeded) > bottomLimit) {
-                                doc.addPage();
-                                drawPageNumber();
-                                renderReportHeader(`${combinationTitle} (vervolg)`);
-                                y = doc.y;
-                                drawTableHeader(y);
-                                y += rowHeight;
-                            }
-                            
-                            // Render "Vaste lijst" row if it exists
-                            if (dailyDeduction) {
-                                drawTableRow(dailyDeduction, y, false);
-                                y += rowHeight;
-                            }
-                            
-                            // Render total row
-                            drawTotalRow(chunkTotal, y);
-                            y += rowHeight;
-
-                            if (y + 24 > bottomLimit) {
-                                doc.addPage();
-                                drawPageNumber();
-                                renderReportHeader(`${combinationTitle} (vervolg)`);
-                                y = doc.y;
-                            } else {
-                                y += 12;
-                            }
-                            
-                            hasRenderedTotal = true;
-                        }
-
-                        pageForChunk++;
-                    }
+                doc.restore();
+                y += rowHeight;
+            };
+    
+            const drawTotalRow = (label: string, totalCents: number) => {
+                doc.save();
+                doc.rect(left, y, usableWidth, rowHeight).fill('#e8ebed');
+                doc.fillColor('#000000');
+                doc.font('Helvetica-Bold').fontSize(11);
+                doc.text(label, left + 8, y + 4, { width: codeColWidth - 16 });
+                doc.text((totalCents / 100).toFixed(2), left + codeColWidth, y + 4, {
+                    width: amountColWidth - 16,
+                    align: 'right'
                 });
-
-                // Now process all Super 4 games in a single combined table at the end
-                if (super4Chunks.length > 0) {
-                    // Combine all Super 4 entries into one array, filtering out "Vaste lijst" entries
-                    const allSuper4Entries: RelayableTicketEntry[] = [];
-                    let super4DailyDeduction: any = null;
-                    
-                    super4Chunks.forEach(chunk => {
-                        // Filter out "Vaste lijst" entries from regular entries
-                        const regularEntries = chunk.entries.filter(e => e.code !== 'Vaste lijst');
-                        allSuper4Entries.push(...regularEntries);
-                        
-                        // Store the daily deduction (there should only be one for Super4)
-                        if ((chunk as any).dailyDeduction) {
-                            super4DailyDeduction = (chunk as any).dailyDeduction;
-                        }
-                    });
-
-                    // Calculate total: sum of all regular entries (excluding "Vaste lijst")
-                    // The "Vaste lijst" will be shown separately and is already negative
-                    const super4Total = allSuper4Entries.reduce((sum, entry) => sum + entry.final, 0) +
-                        (super4DailyDeduction ? super4DailyDeduction.final : 0);
-                    const combinationTitle = 'Super 4';
-
-                    let entryIndex = 0;
-                    let pageForSuper4 = 0;
-                    let hasRenderedSuper4Total = false;
-
-                    while (entryIndex < allSuper4Entries.length || !hasRenderedSuper4Total) {
-                        if (!isFirstPage) {
-                            doc.addPage();
-                        }
-                        isFirstPage = false;
-                        
-                        // Draw page number at the bottom of the page
-                        drawPageNumber();
-
-                        const subtitle = pageForSuper4 > 0 ? `${combinationTitle} (vervolg)` : combinationTitle;
-                        renderReportHeader(subtitle);
-
-                        let y = doc.y;
-                        drawTableHeader(y);
-                        y += rowHeight;
-
-                        let stripe = false;
-                        while (entryIndex < allSuper4Entries.length) {
-                            if (y + rowHeight > bottomLimit) {
-                                break;
-                            }
-                            const entry = allSuper4Entries[entryIndex];
-                            drawTableRow(entry, y, stripe);
-                            stripe = !stripe;
-                            y += rowHeight;
-                            entryIndex++;
-                        }
-
-                        // After all regular entries are rendered, add "Vaste lijst" and total row
-                        if (entryIndex >= allSuper4Entries.length && !hasRenderedSuper4Total) {
-                            // Check if we have room for "Vaste lijst" row (if exists) and total row
-                            const rowsNeeded = super4DailyDeduction ? 2 : 1;
-                            if (y + (rowHeight * rowsNeeded) > bottomLimit) {
-                                doc.addPage();
-                                drawPageNumber();
-                                renderReportHeader(`${combinationTitle} (vervolg)`);
-                                y = doc.y;
-                                drawTableHeader(y);
-                                y += rowHeight;
-                            }
-                            
-                            // Render "Vaste lijst" row if it exists
-                            if (super4DailyDeduction) {
-                                drawTableRow(super4DailyDeduction, y, false);
-                                y += rowHeight;
-                            }
-                            
-                            // Render total row
-                            drawTotalRow(super4Total, y);
-                            y += rowHeight;
-                            
-                            hasRenderedSuper4Total = true;
-                        }
-
-                        pageForSuper4++;
-                    }
+                doc.restore();
+                y += rowHeight;
+            };
+    
+            const startSectionPage = (title: string, firstColLabel: string, continuation: boolean) => {
+                if (!isFirstSection) {
+                    doc.addPage();
                 }
-
-                // Add daily tickets summary at the bottom
-                if (dailyCodesForDisplay.length > 0) {
-                    // Group codes by game for section headers
-                    const codesByGame = new Map<number, typeof dailyCodesForDisplay>();
-                    for (const code of dailyCodesForDisplay) {
-                        if (!codesByGame.has(code.gameID)) {
-                            codesByGame.set(code.gameID, []);
-                        }
-                        codesByGame.get(code.gameID)!.push(code);
+                isFirstSection = false;
+                y = top;
+    
+                const fullTitle = continuation ? `${title} (vervolg)` : title;
+                doc.font('Helvetica-Bold')
+                    .fontSize(12)
+                    .fillColor('#000000')
+                    .text(fullTitle, left, y, { width: usableWidth });
+                y += titleHeight;
+    
+                drawTableHeader(firstColLabel);
+            };
+    
+            const renderSection = (
+                title: string,
+                entries: RelayableTicketEntry[],
+                totalCents: number,
+                firstColLabel = 'Code'
+            ) => {
+                if (!entries.length && totalCents === 0) return;
+    
+                // Ensure "Vaste lijst" appears at the end
+                const ordered: RelayableTicketEntry[] = [
+                    ...entries.filter(e => e.code !== 'Vaste lijst'),
+                    ...entries.filter(e => e.code === 'Vaste lijst')
+                ];
+    
+                startSectionPage(title, firstColLabel, false);
+    
+                let stripe = false;
+                let i = 0;
+    
+                while (i < ordered.length) {
+                    if (y + rowHeight > bottomLimit) {
+                        // New physical page, same table
+                        startSectionPage(title, firstColLabel, true);
+                        stripe = false;
                     }
-                    
-                    // Check if we need to add a new page for the summary
-                    const totalRows = dailyCodesForDisplay.length + codesByGame.size + 2; // +game headers +total
-                    const spaceNeeded = rowHeight * (totalRows + 2); // +2 for padding
-                    
-                    if (doc.y + spaceNeeded > bottomLimit) {
-                        doc.addPage();
-                        drawPageNumber();
-                        isFirstPage = false;
-                    } else if (!isFirstPage) {
-                        // Add some spacing if we're continuing on the same page
-                        doc.moveDown(1);
-                    }
-                    
-                    renderReportHeader('Gespeelde daglijkse tickets');
-                    
-                    let y = doc.y;
-                    let grandTotal = 0;
-                    
-                    // Process each game group
-                    for (const [gameID, codes] of codesByGame) {
-                        const gameName = codes[0].gameName;
-                        
-                        // Add game header
-                        renderReportHeader(gameName);
-                        y = doc.y;
-                        drawTableHeader(y);
-                        y += rowHeight;
-                        
-                        let gameTotal = 0;
-                        let stripe = false;
-                        
-                        // Add individual codes
-                        for (const code of codes) {
-                            drawTableRow({
-                                code: code.code,
-                                codeLength: code.code.length,
-                                value: code.value,
-                                deduction: 0,
-                                final: code.value
-                            } as any, y, stripe);
-                            
-                            gameTotal += code.value;
-                            grandTotal += code.value;
-                            stripe = !stripe;
-                            y += rowHeight;
-                        }
-                        
-                        // Add game total
-                        drawTotalRow(gameTotal, y);
-                        y += rowHeight + 12; // Extra spacing between games
-                    }
-                    
-                    // Add grand total if multiple games
-                    if (codesByGame.size > 1) {
-                        if (y + rowHeight > bottomLimit) {
-                            doc.addPage();
-                            drawPageNumber();
-                            renderReportHeader('Gespeelde daglijkse tickets (vervolg)');
-                            y = doc.y;
-                        }
-                        
-                        // Grand total header
-                        doc.font('Helvetica-Bold').fontSize(11)
-                            .text('Totaal alle daglijkse tickets', left, y + 6);
-                        drawTotalRow(grandTotal, y);
-                    }
+    
+                    drawEntryRow(ordered[i], stripe);
+                    stripe = !stripe;
+                    i++;
                 }
-
+    
+                if (y + rowHeight > bottomLimit) {
+                    startSectionPage(title, firstColLabel, true);
+                }
+                drawTotalRow('Totaal', totalCents);
+            };
+    
+            // Nothing at all
+            if (!relayableTickets.length && !dailyCodesForDisplay.length) {
+                doc.font('Helvetica')
+                    .fontSize(12)
+                    .fillColor('#000000')
+                    .text('Geen relaybare of daglijkse tickets gevonden', left, y, { width: usableWidth });
                 doc.end();
-            } catch (err) {
-                reject(err);
+                return;
             }
+    
+            // ---- Relayable tickets: Super4 vs non-Super4 ----
+            const super4Chunks: ChunkedRelayableTicket[] = [];
+            const nonSuper4Chunks: ChunkedRelayableTicket[] = [];
+    
+            relayableTickets.forEach(chunk => {
+                const isSuper4 =
+                    chunk.gameCombination.length === 1 &&
+                    chunk.gameCombination[0] === 'Super 4';
+                if (isSuper4) {
+                    super4Chunks.push(chunk);
+                } else {
+                    nonSuper4Chunks.push(chunk);
+                }
+            });
+    
+            // Non-Super4 chunks: each chunk = its own section/table (and therefore its own page)
+            for (const chunk of nonSuper4Chunks) {
+                if (!chunk.entries || !chunk.entries.length) continue;
+    
+                const totalCents = (chunk.entries as RelayableTicketEntry[]).reduce(
+                    (sum, e) => sum + e.final,
+                    0
+                );
+    
+                renderSection(
+                    chunk.gameCombination.join(', '),
+                    chunk.entries as RelayableTicketEntry[],
+                    totalCents
+                );
+            }
+    
+            // Super4 chunks: one section per chunk (still 1 table per page)
+            for (const chunk of super4Chunks) {
+                if (!chunk.entries || !chunk.entries.length) continue;
+    
+                const totalCents = (chunk.entries as RelayableTicketEntry[]).reduce(
+                    (sum, e) => sum + e.final,
+                    0
+                );
+    
+                renderSection(
+                    'Super 4',
+                    chunk.entries as RelayableTicketEntry[],
+                    totalCents
+                );
+            }
+    
+            // ---- Daily tickets (vaste nummers) ----
+            if (dailyCodesForDisplay.length > 0) {
+                const codesByGame = new Map<number, typeof dailyCodesForDisplay>();
+                for (const code of dailyCodesForDisplay) {
+                    if (!codesByGame.has(code.gameID)) {
+                        codesByGame.set(code.gameID, []);
+                    }
+                    codesByGame.get(code.gameID)!.push(code);
+                }
+    
+                let grandTotal = 0;
+    
+                // Each game’s daily summary = its own section / table / page
+                for (const [gameID, codes] of codesByGame) {
+                    if (!codes.length) continue;
+                    const gameName = codes[0].gameName;
+    
+                    const entries: RelayableTicketEntry[] = codes.map(c => ({
+                        code: c.code,
+                        codeLength: c.code.length,
+                        value: c.value,
+                        deduction: 0,
+                        final: c.value
+                    })) as any;
+    
+                    const totalForGame = codes.reduce((sum, c) => sum + c.value, 0);
+                    grandTotal += totalForGame;
+    
+                    renderSection(
+                        `Gespeelde daglijkse tickets – ${gameName}`,
+                        entries,
+                        totalForGame
+                    );
+                }
+    
+                // Grand total (if multiple games): its own small table on its own page
+                if (codesByGame.size > 1) {
+                    const totalEntry: RelayableTicketEntry = {
+                        code: 'Totaal alle daglijkse tickets',
+                        codeLength: 0,
+                        value: grandTotal,
+                        deduction: 0,
+                        final: grandTotal
+                    } as any;
+    
+                    renderSection(
+                        'Gespeelde daglijkse tickets – totaal',
+                        [totalEntry],
+                        grandTotal,
+                        'Omschrijving'
+                    );
+                }
+            }
+    
+            doc.end();
         });
-    }
+    };
 
     private getAllTicketsForDateRange = async (start: string, end: string): Promise<ChunkedRelayableTicket[]> => {
         const startDate = this.parseDateParameter(start, true);
