@@ -760,15 +760,18 @@ export class TicketService extends Service implements ITicketService {
             const titleHeight = 18;
     
             // 1 column for code/description, 1 for amount
-            const codeColWidth = Math.round(usableWidth * 0.65);
-            const amountColWidth = usableWidth - codeColWidth;
+            // Use a compact fixed table width so the table is only as wide
+            // as needed for the code and value, instead of stretching full-page.
+            const codeColWidth = 100;
+            const amountColWidth = 100;
+            const tableWidth = codeColWidth + amountColWidth;
     
             let y = top;
             let isFirstSection = true;
     
             const drawTableHeader = (firstColLabel: string) => {
                 doc.save();
-                doc.rect(left, y, usableWidth, rowHeight).fill('#f2f4f7');
+                doc.rect(left, y, tableWidth, rowHeight).fill('#f2f4f7');
                 doc.fillColor('#000000');
                 doc.font('Helvetica-Bold').fontSize(11);
                 doc.text(firstColLabel, left + 8, y + 4, { width: codeColWidth - 16 });
@@ -785,11 +788,11 @@ export class TicketService extends Service implements ITicketService {
     
                 doc.save();
                 if (isVasteLijst) {
-                    doc.rect(left, y, usableWidth, rowHeight).fill('#fff4cc');
+                    doc.rect(left, y, tableWidth, rowHeight).fill('#fff4cc');
                 } else if (striped) {
-                    doc.rect(left, y, usableWidth, rowHeight).fill('#fbfcfe');
+                    doc.rect(left, y, tableWidth, rowHeight).fill('#fbfcfe');
                 } else {
-                    doc.rect(left, y, usableWidth, rowHeight).fill('#ffffff');
+                    doc.rect(left, y, tableWidth, rowHeight).fill('#ffffff');
                 }
     
                 doc.fillColor('#000000');
@@ -805,7 +808,7 @@ export class TicketService extends Service implements ITicketService {
     
             const drawTotalRow = (label: string, totalCents: number) => {
                 doc.save();
-                doc.rect(left, y, usableWidth, rowHeight).fill('#e8ebed');
+                doc.rect(left, y, tableWidth, rowHeight).fill('#e8ebed');
                 doc.fillColor('#000000');
                 doc.font('Helvetica-Bold').fontSize(11);
                 doc.text(label, left + 8, y + 4, { width: codeColWidth - 16 });
