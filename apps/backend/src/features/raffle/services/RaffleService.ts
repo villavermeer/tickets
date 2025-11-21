@@ -9,6 +9,7 @@ import { CodeMapper } from '../../code/mappers/CodeMapper';
 import { Game, Ticket, BalanceActionType } from '@prisma/client';
 import { GameInterface, TicketInterface } from '@tickets/types';
 import { DateTime } from 'luxon';
+import { createPrizeReference } from '../utils/prizeReference';
 
 export interface IRaffleService {
     save(data: Array<CreateRaffleRequest>): Promise<void>
@@ -449,6 +450,8 @@ class RaffleService extends Service implements IRaffleService {
             }
         }
 
+        const processedReferences = new Set<string>();
+
         // Process each game's winning tickets
         for (const [gameID, { winningCodes, raffleIDs }] of winningCodesByGame) {
             if (winningCodes.length === 0) continue;
@@ -488,11 +491,14 @@ class RaffleService extends Service implements IRaffleService {
 
                 // Process each unique code (summing prizes for duplicates)
                 for (const [codeStr, codeInstances] of codesByString) {
+                    // Ensure deterministic ordering for consistent references
+                    const orderedInstances = [...codeInstances].sort((a, b) => a.id - b.id);
+
                     // Sum stake values for all instances of this code
-                    const totalStake = codeInstances.reduce((sum, instance) => sum + instance.value, 0);
+                    const totalStake = orderedInstances.reduce((sum, instance) => sum + instance.value, 0);
                     
                     // Calculate prize for this code using total stake
-                    const firstInstance = codeInstances[0];
+                    const firstInstance = orderedInstances[0];
                     const prizeAmount = this.calculatePrizeAmount(
                         firstInstance.code,
                         totalStake,
@@ -504,17 +510,28 @@ class RaffleService extends Service implements IRaffleService {
 
                     // Use the first raffle ID for this game
                     const raffleID = raffleIDs[0];
-                    // Use the first code instance ID to make reference unique per code instance
-                    const codeID = codeInstances[0].id;
-                    const reference = `PRIZE:${raffleID}:${ticket.id}:${codeID}`;
+                    // Build stable reference using ticket + literal code
+                    const reference = createPrizeReference(raffleID, ticket.id, codeStr);
 
                     // Check if prize action already exists
                     const existingPrize = await this.db.balanceAction.findFirst({
-                        where: { reference }
+                        where: {
+                            reference,
+                            type: BalanceActionType.PRIZE
+                        }
                     });
 
+                    if (processedReferences.has(reference)) {
+                        console.debug(`Prize action already processed in-memory for ticket ${ticket.id}, code ${firstInstance.code}`);
+                        continue;
+                    }
+
                     if (existingPrize) {
-                        console.debug(`Prize action already exists for ticket ${ticket.id}, code ${firstInstance.code} (codeID ${codeID}), amount: ${existingPrize.amount/100} EUR`);
+                        if (existingPrize.amount !== -prizeAmount) {
+                            console.warn(`Prize action ${existingPrize.id} for ticket ${ticket.id}, code ${firstInstance.code} has mismatched amount (${existingPrize.amount/100} vs ${prizeAmount/100})`);
+                        } else {
+                            console.debug(`Prize action already exists for ticket ${ticket.id}, code ${firstInstance.code}, amount: ${existingPrize.amount/100} EUR`);
+                        }
                         continue;
                     }
 
@@ -544,6 +561,8 @@ class RaffleService extends Service implements IRaffleService {
                             created: endOfDay // Use end of day so it appears on the correct date
                         }
                     });
+
+                    processedReferences.add(reference);
 
                     // Update balance (add the prize amount)
                     await this.db.balance.update({

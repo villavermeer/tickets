@@ -1972,24 +1972,21 @@ export class TicketService extends Service implements ITicketService {
                 }
                 if (!meetsThreshold) continue;
 
-                // Apply daily deduction to the window value
-                const windowValueAfterDailyDeduction = e.value - dailyDeductionForCode;
+                // Apply deduction rule FIRST to the original window value
+                const windowCalc = this.calculateDeduction(e.codeLength, e.value, group.gameIds);
                 
-                // Skip codes with zero or negative window value after daily deduction
-                if (windowValueAfterDailyDeduction <= 0) continue;
-
-                // Calculate deduction on the window value after daily deduction
-                const windowCalc = this.calculateDeduction(e.codeLength, windowValueAfterDailyDeduction, group.gameIds);
-
-                // Skip codes with zero or negative final value
-                if (windowCalc.finalValue <= 0) continue;
+                // Then subtract the daily deduction from the result
+                const finalValueAfterDailyDeduction = windowCalc.finalValue - dailyDeductionForCode;
+                
+                // Skip codes with zero or negative final value after both deductions
+                if (finalValueAfterDailyDeduction <= 0) continue;
 
                 entriesDetailed.push({ 
                     code: e.code, 
                     codeLength: e.codeLength, 
-                    value: windowValueAfterDailyDeduction, 
-                    deduction: windowCalc.deduction, 
-                    final: windowCalc.finalValue 
+                    value: e.value,  // Keep original value for display
+                    deduction: windowCalc.deduction + dailyDeductionForCode,  // Total deduction includes both
+                    final: finalValueAfterDailyDeduction 
                 });
                 e.ids.forEach(id => relayableCodeIds.add(id));
             }
@@ -2220,8 +2217,8 @@ export class TicketService extends Service implements ITicketService {
                     deductionInEuros = 1;
                 }
             } else if (codeLength === 3) {
-                // 3 digits: Inleg van 3 tot 7 euro halen we 2 euro vanaf. Alles vanaf 7 euro of hoger halen we 5 euro vanaf
-                if (valueInEuros >= 3 && valueInEuros < 7) {
+                // 3 digits: Inleg van 3.75 tot 7 euro halen we 2 euro vanaf. Alles vanaf 7 euro of hoger halen we 5 euro vanaf
+                if (valueInEuros >= 3.75 && valueInEuros < 7) {
                     deductionInEuros = 2;
                 } else if (valueInEuros >= 7) {
                     deductionInEuros = 5;

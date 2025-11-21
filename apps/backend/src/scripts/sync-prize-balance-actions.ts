@@ -13,6 +13,7 @@ import { container } from 'tsyringe';
 import { PrizeService } from '../features/prize/services/PrizeService';
 import { Context } from '../common/utils/context';
 import prisma from '../common/utils/prisma';
+import { createPrizeReference } from '../features/raffle/utils/prizeReference';
 
 // Register PrizeService
 container.register("Database", { useValue: prisma });
@@ -78,7 +79,7 @@ async function main() {
                         continue;
                     }
 
-                    const reference = `PRIZE:${raffleID}:${ticket.id}:${prizeCode.code}`;
+                    const reference = createPrizeReference(raffleID, ticket.id, prizeCode.code);
 
                     // Check if balance action already exists
                     const existing = await prisma.balanceAction.findFirst({
