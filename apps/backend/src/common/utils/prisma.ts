@@ -1,5 +1,6 @@
-import { BalanceActionType, Prisma, PrismaClient } from '@prisma/client';
+import { BalanceActionType, Prisma, PrismaClient, Role } from '@prisma/client';
 import {pagination} from 'prisma-extension-pagination';
+import { DateTime } from 'luxon';
 
 // Multiplier matrix for prize calculation (same as PrizeService)
 const MULTIPLIERS = {
@@ -36,6 +37,8 @@ function calculatePrizeAmount(
 
     return total;
 }
+
+const MANAGER_PROVISION_PERCENTAGE = 25; // All managers get 25% total provision
 
 // Initialize base Prisma Client
 const basePrisma = new PrismaClient();
@@ -134,6 +137,140 @@ basePrisma.$use(async (params: Prisma.MiddlewareParams, next: (params: Prisma.Mi
                         data: { balance: { increment: totalStake } },
                     },
                 });
+
+                // Create manager provision from runner if applicable
+                try {
+                    const runner = await next({
+                        model: 'User',
+                        action: 'findUnique',
+                        dataPath: [],
+                        runInTransaction,
+                        args: {
+                            where: { id: ticket.creatorID },
+                            select: {
+                                id: true,
+                                commission: true,
+                                role: true,
+                            },
+                        },
+                    }) as { id: number; commission: number; role: string } | null;
+
+                    if (runner && runner.commission > 0) {
+                        // Check if runner has a manager
+                        const managerRelation = await next({
+                            model: 'ManagerRunner',
+                            action: 'findFirst',
+                            dataPath: [],
+                            runInTransaction,
+                            args: {
+                                where: { runnerID: runner.id },
+                                select: {
+                                    managerID: true,
+                                    manager: {
+                                        select: {
+                                            id: true,
+                                            role: true,
+                                        },
+                                    },
+                                },
+                            },
+                        }) as { managerID: number; manager: { id: number; role: string } } | null;
+
+                        if (managerRelation && managerRelation.manager.role === Role.MANAGER) {
+                            const managerID = managerRelation.managerID;
+                            
+                            // Calculate manager's provision: (25% - runner.commission%) × totalStake
+                            const managerProvisionPercentage = MANAGER_PROVISION_PERCENTAGE - runner.commission;
+                            
+                            if (managerProvisionPercentage > 0) {
+                                const managerProvisionAmount = Math.round((totalStake * managerProvisionPercentage) / 100);
+                                
+                                if (managerProvisionAmount > 0) {
+                                    // Get or create manager balance
+                                    const managerBalance = await next({
+                                        model: 'Balance',
+                                        action: 'upsert',
+                                        dataPath: [],
+                                        runInTransaction,
+                                        args: {
+                                            where: { userID: managerID },
+                                            update: {},
+                                            create: { userID: managerID, balance: 0 },
+                                        },
+                                    }) as { id: number };
+
+                                    // Create date string for reference (DD-MM-YYYY format) in Amsterdam timezone
+                                    const ticketDate = DateTime.fromJSDate(ticket.created).setZone('Europe/Amsterdam');
+                                    const dateStr = ticketDate.toFormat('dd-MM-yyyy');
+                                    const managerProvisionReference = `Provisie lopers ${dateStr}`;
+
+                                    // Find existing provision action for this manager on this date
+                                    const existingManagerProvision = await next({
+                                        model: 'BalanceAction',
+                                        action: 'findFirst',
+                                        dataPath: [],
+                                        runInTransaction,
+                                        args: {
+                                            where: {
+                                                balanceID: managerBalance.id,
+                                                type: BalanceActionType.PROVISION,
+                                                reference: managerProvisionReference,
+                                            },
+                                            select: { id: true, amount: true },
+                                        },
+                                    }) as { id: number; amount: number } | null;
+
+                                    if (existingManagerProvision) {
+                                        // Update existing provision: add to current amount
+                                        const newAmount = existingManagerProvision.amount - managerProvisionAmount;
+                                        await next({
+                                            model: 'BalanceAction',
+                                            action: 'update',
+                                            dataPath: [],
+                                            runInTransaction,
+                                            args: {
+                                                where: { id: existingManagerProvision.id },
+                                                data: { amount: newAmount },
+                                            },
+                                        });
+                                    } else {
+                                        // Create new provision action
+                                        await next({
+                                            model: 'BalanceAction',
+                                            action: 'create',
+                                            dataPath: [],
+                                            runInTransaction,
+                                            args: {
+                                                data: {
+                                                    balanceID: managerBalance.id,
+                                                    type: BalanceActionType.PROVISION,
+                                                    amount: -managerProvisionAmount,
+                                                    reference: managerProvisionReference,
+                                                    created: ticket.created,
+                                                },
+                                            },
+                                        });
+                                    }
+
+                                    // Update manager balance
+                                    await next({
+                                        model: 'Balance',
+                                        action: 'update',
+                                        dataPath: [],
+                                        runInTransaction,
+                                        args: {
+                                            where: { id: managerBalance.id },
+                                            data: { balance: { decrement: managerProvisionAmount } },
+                                        },
+                                    });
+                                }
+                            }
+                        }
+                    }
+                } catch (managerProvisionError) {
+                    // Log error but don't fail the ticket sale
+                    console.error('Failed to create manager provision from runner', managerProvisionError);
+                }
             }
         } catch (error) {
             console.error('Failed to record balance action for ticket sale', error);
