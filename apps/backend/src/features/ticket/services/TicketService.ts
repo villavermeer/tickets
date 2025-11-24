@@ -830,9 +830,14 @@ export class TicketService extends Service implements ITicketService {
                 const fullTitle = continuation ? `${title} (vervolg)` : title;
                 doc.font('Helvetica-Bold')
                     .fontSize(12)
-                    .fillColor('#000000')
-                    .text(fullTitle, left, y, { width: usableWidth });
-                y += titleHeight;
+                    .fillColor('#000000');
+                
+                // Calculate actual height of wrapped title text
+                const titleHeightActual = doc.heightOfString(fullTitle, { width: usableWidth });
+                doc.text(fullTitle, left, y, { width: usableWidth });
+                
+                // Add spacing after title (title height + some padding)
+                y += titleHeightActual + 8;
     
                 drawTableHeader(firstColLabel);
             };
@@ -1655,6 +1660,7 @@ export class TicketService extends Service implements ITicketService {
                 where: {
                     ticketID: { in: tickets.map(ticket => ticket.id) },
                     relayed: null,
+                    daily: false, // Exclude daily codes - they are handled separately in PDF export
                 },
                 include: {
                     ticket: {
