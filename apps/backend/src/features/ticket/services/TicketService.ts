@@ -1960,11 +1960,11 @@ export class TicketService extends Service implements ITicketService {
                 if (isSuper4) {
                     if (e.codeLength === 4) meetsThreshold = valueInEuros >= 1.00;
                     else if (e.codeLength === 3) meetsThreshold = valueInEuros >= 2.50;
-                    else if (e.codeLength === 2) meetsThreshold = false;
+                    else if (e.codeLength === 2) meetsThreshold = false; // All 2-digit codes excluded
                 } else {
                     if (e.codeLength === 4) meetsThreshold = valueInEuros >= 1.25;
                     else if (e.codeLength === 3) meetsThreshold = valueInEuros >= 3.75;
-                    else if (e.codeLength === 2) meetsThreshold = true; // All 2-digit codes included
+                    else if (e.codeLength === 2) meetsThreshold = false; // All 2-digit codes excluded
                 }
                 if (!meetsThreshold) continue;
 
