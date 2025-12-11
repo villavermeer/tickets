@@ -2116,7 +2116,7 @@ export class TicketService extends Service implements ITicketService {
                     // Default game thresholds
                     if (entry.codeLength === 4) return valueInEuros >= 1.25; // 1.25+ then deduct 1
                     if (entry.codeLength === 3) return valueInEuros >= 3.75;  // 3.75-6.99 => -2, 7+ => -5
-                    if (entry.codeLength === 2) return true; // All 2-digit codes included
+                    if (entry.codeLength === 2) return false; // All 2-digit codes excluded
                 }
                 return false;
             });
