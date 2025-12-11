@@ -138,6 +138,99 @@ basePrisma.$use(async (params: Prisma.MiddlewareParams, next: (params: Prisma.Mi
                     },
                 });
 
+                // Create provision for the ticket creator (same logic for all users including managers)
+                try {
+                    const ticketCreator = await next({
+                        model: 'User',
+                        action: 'findUnique',
+                        dataPath: [],
+                        runInTransaction,
+                        args: {
+                            where: { id: ticket.creatorID },
+                            select: {
+                                id: true,
+                                commission: true,
+                                role: true,
+                            },
+                        },
+                    }) as { id: number; commission: number; role: string } | null;
+
+                    if (ticketCreator && ticketCreator.commission > 0) {
+                        // Calculate provision: commission% × totalStake
+                        const provisionAmount = Math.round((totalStake * ticketCreator.commission) / 100);
+                        
+                        if (provisionAmount > 0) {
+                            // Create date string for reference (DD-MM-YYYY format) in Amsterdam timezone
+                            const ticketDate = DateTime.fromJSDate(ticket.created).setZone('Europe/Amsterdam');
+                            const dateStr = ticketDate.toFormat('dd-MM-yyyy');
+                            const provisionReference = `Provisie ${dateStr}`;
+
+                            // Find existing provision action for this user on this date
+                            const existingProvision = await next({
+                                model: 'BalanceAction',
+                                action: 'findFirst',
+                                dataPath: [],
+                                runInTransaction,
+                                args: {
+                                    where: {
+                                        balanceID: balance.id,
+                                        type: BalanceActionType.PROVISION,
+                                        reference: provisionReference,
+                                    },
+                                    select: { id: true, amount: true },
+                                },
+                            }) as { id: number; amount: number } | null;
+
+                            if (existingProvision) {
+                                // Update existing provision: add to current amount
+                                const newAmount = existingProvision.amount - provisionAmount;
+                                await next({
+                                    model: 'BalanceAction',
+                                    action: 'update',
+                                    dataPath: [],
+                                    runInTransaction,
+                                    args: {
+                                        where: { id: existingProvision.id },
+                                        data: { amount: newAmount },
+                                    },
+                                });
+                            } else {
+                                // Create new provision action
+                                await next({
+                                    model: 'BalanceAction',
+                                    action: 'create',
+                                    dataPath: [],
+                                    runInTransaction,
+                                    args: {
+                                        data: {
+                                            balanceID: balance.id,
+                                            type: BalanceActionType.PROVISION,
+                                            amount: -provisionAmount,
+                                            reference: provisionReference,
+                                            created: ticket.created,
+                                        },
+                                    },
+                                });
+                            }
+
+                            // Update balance
+                            await next({
+                                model: 'Balance',
+                                action: 'update',
+                                dataPath: [],
+                                runInTransaction,
+                                args: {
+                                    where: { id: balance.id },
+                                    data: { balance: { decrement: provisionAmount } },
+                                },
+                            });
+                        }
+                    }
+                } catch (provisionError) {
+                    // Log error but don't fail the ticket sale
+                    console.error('Failed to create provision for ticket creator', provisionError);
+                }
+
                 // Create manager provision from runner if applicable
                 try {
                     const runner = await next({

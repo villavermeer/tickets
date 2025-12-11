@@ -1910,9 +1910,6 @@ export class TicketService extends Service implements ITicketService {
             dayEnd.setUTCHours(23, 59, 59, 999);
         }
 
-        // Calculate daily code totals per code per game for WNK and Super4
-        const dailyTotalsPerCode = await this.calculateDailyCodeTotals(dayStart, dayEnd);
-
         const chunks: ChunkedRelayableTicket[] = [];
         for (const group of Array.from(groups.values())) {
             const isSuper4 = group.gameIds.includes(7);
@@ -1957,15 +1954,8 @@ export class TicketService extends Service implements ITicketService {
                 const totalAllDay = totalByCode.get(e.code) || 0;
                 const committedValue = committedByCode.get(e.code) || 0;
 
-                // Get daily deduction for this specific code ONLY if it matches the current game
-                const dailyGameMap = dailyTotalsPerCode.get(e.code);
-                const dailyDeductionForCode = dailyGameMap ? (dailyGameMap.get(gameID) || 0) : 0;
-                
-                // Apply daily deduction to the full day total for threshold check
-                const totalAllDayAfterDailyDeduction = totalAllDay - dailyDeductionForCode;
-                
-                // Apply threshold to the full day total after daily deduction
-                const valueInEuros = totalAllDayAfterDailyDeduction / 100;
+                // Apply threshold to the full day total
+                const valueInEuros = totalAllDay / 100;
                 let meetsThreshold = false;
                 if (isSuper4) {
                     if (e.codeLength === 4) meetsThreshold = valueInEuros >= 1.00;
@@ -1974,25 +1964,22 @@ export class TicketService extends Service implements ITicketService {
                 } else {
                     if (e.codeLength === 4) meetsThreshold = valueInEuros >= 1.25;
                     else if (e.codeLength === 3) meetsThreshold = valueInEuros >= 3.75;
-                    else if (e.codeLength === 2) meetsThreshold = valueInEuros >= 25.00;
+                    else if (e.codeLength === 2) meetsThreshold = true; // All 2-digit codes included
                 }
                 if (!meetsThreshold) continue;
 
-                // Apply deduction rule FIRST to the original window value
+                // Apply deduction rule to the original window value
                 const windowCalc = this.calculateDeduction(e.codeLength, e.value, group.gameIds);
                 
-                // Then subtract the daily deduction from the result
-                const finalValueAfterDailyDeduction = windowCalc.finalValue - dailyDeductionForCode;
-                
-                // Skip codes with zero or negative final value after both deductions
-                if (finalValueAfterDailyDeduction <= 0) continue;
+                // Skip codes with zero or negative final value after deduction
+                if (windowCalc.finalValue <= 0) continue;
 
                 entriesDetailed.push({ 
                     code: e.code, 
                     codeLength: e.codeLength, 
                     value: e.value,  // Keep original value for display
-                    deduction: windowCalc.deduction + dailyDeductionForCode,  // Total deduction includes both
-                    final: finalValueAfterDailyDeduction 
+                    deduction: windowCalc.deduction,
+                    final: windowCalc.finalValue
                 });
                 e.ids.forEach(id => relayableCodeIds.add(id));
             }
@@ -2000,45 +1987,20 @@ export class TicketService extends Service implements ITicketService {
             if (!entriesDetailed.length) {
                 continue;
             }
-
-            // Calculate daily deduction for this game (will be shown separately)
-            // Sum up all daily deductions for codes that appear in this game, ONLY for the current game
-            const dailyTotal = Array.from(dailyTotalsPerCode.entries())
-                .filter(([code, _]) => entriesDetailed.some(e => e.code === code))
-                .reduce((sum, [_, gameMap]) => {
-                    const deductionForGame = gameMap.get(gameID) || 0;
-                    return sum + deductionForGame;
-                }, 0);
             
-            // Calculate totals (daily deduction is already applied per code)
+            // Calculate totals
             const totalValue = entriesDetailed.reduce((s, x) => s + x.value, 0);
             const deduction = entriesDetailed.reduce((s, x) => s + x.deduction, 0);
             const finalValue = entriesDetailed.reduce((s, x) => s + x.final, 0);
 
-            // Create the "Vaste lijst" entry separately
-            const vasteLijstEntry = dailyTotal > 0 ? {
-                code: 'Vaste lijst',
-                codeLength: 0,
-                value: -dailyTotal,
-                deduction: 0,
-                final: -dailyTotal
-            } : null;
-
-            // Store all entries including "Vaste lijst" for Excel export
-            const allEntries = vasteLijstEntry 
-                ? [...entriesDetailed, vasteLijstEntry]
-                : entriesDetailed;
-
             chunks.push({
                 gameCombination: group.gameNames,
-                codes: allEntries.map(e => e.code),
+                codes: entriesDetailed.map(e => e.code),
                 totalValue,
                 ticketCount: entriesDetailed.length,
                 deduction,
                 finalValue,
-                entries: allEntries,
-                // Store daily deduction separately for PDF rendering
-                dailyDeduction: vasteLijstEntry
+                entries: entriesDetailed
             } as any);
         }
 
@@ -2154,7 +2116,7 @@ export class TicketService extends Service implements ITicketService {
                     // Default game thresholds
                     if (entry.codeLength === 4) return valueInEuros >= 1.25; // 1.25+ then deduct 1
                     if (entry.codeLength === 3) return valueInEuros >= 3.75;  // 3.75-6.99 => -2, 7+ => -5
-                    if (entry.codeLength === 2) return valueInEuros >= 25.00; // 25+ => halve
+                    if (entry.codeLength === 2) return true; // All 2-digit codes included
                 }
                 return false;
             });
@@ -2230,10 +2192,8 @@ export class TicketService extends Service implements ITicketService {
                     deductionInEuros = 5;
                 }
             } else if (codeLength === 2) {
-                // 2 digits: Alles vanaf 25 euro gaat door de helft
-                if (valueInEuros >= 25) {
-                    deductionInEuros = valueInEuros / 2;
-                }
+                // 2 digits: No deduction applied
+                deductionInEuros = 0;
             }
         }
 
