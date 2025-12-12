@@ -10,6 +10,7 @@ import { Game, Ticket, BalanceActionType } from '@prisma/client';
 import { GameInterface, TicketInterface } from '@tickets/types';
 import { DateTime } from 'luxon';
 import { createPrizeReference } from '../utils/prizeReference';
+import { Role } from '@prisma/client';
 
 export interface IRaffleService {
     save(data: Array<CreateRaffleRequest>): Promise<void>
@@ -262,6 +263,8 @@ class RaffleService extends Service implements IRaffleService {
 
         console.debug(`Start of day: ${startOfDay.toISOString()}, End of day: ${endOfDay.toISOString()}`);
 
+        const MANAGER_PROVISION_PERCENTAGE = 25; // All managers get 25% total provision
+
         // Get all users with their commission percentage
         const users = await this.db.user.findMany({
             select: {
@@ -379,6 +382,164 @@ class RaffleService extends Service implements IRaffleService {
             });
 
             console.debug(`Created provision balance action for user ${user.id}`);
+        }
+
+        // NEW: Process manager provisions from their runners
+        console.debug('=== Processing Manager Provisions from Runners ===');
+        
+        // Get all managers
+        const managers = await this.db.user.findMany({
+            where: {
+                role: Role.MANAGER
+            },
+            select: {
+                id: true,
+                name: true,
+                balance: {
+                    select: {
+                        id: true
+                    }
+                }
+            }
+        });
+
+        console.debug(`Found ${managers.length} managers`);
+
+        for (const manager of managers) {
+            // Get all runners under this manager
+            const managerRunners = await this.db.managerRunner.findMany({
+                where: {
+                    managerID: manager.id
+                },
+                include: {
+                    runner: {
+                        select: {
+                            id: true,
+                            name: true,
+                            commission: true
+                        }
+                    }
+                }
+            });
+
+            if (managerRunners.length === 0) {
+                console.debug(`Manager ${manager.id} has no runners, skipping`);
+                continue;
+            }
+
+            let totalManagerProvisionFromRunners = 0;
+
+            // For each runner, calculate manager's provision
+            for (const managerRunner of managerRunners) {
+                const runner = managerRunner.runner;
+                
+                // Get all tickets created by this runner on the raffle date
+                const runnerTickets = await this.db.ticket.findMany({
+                    where: {
+                        creatorID: runner.id,
+                        created: {
+                            gte: startOfDay,
+                            lte: endOfDay
+                        }
+                    },
+                    include: {
+                        codes: true,
+                        games: true
+                    }
+                });
+
+                if (runnerTickets.length === 0) {
+                    continue;
+                }
+
+                // Calculate total ticket sales for this runner
+                let runnerTicketSales = 0;
+                for (const ticket of runnerTickets) {
+                    const gameCount = ticket.games.length;
+                    const ticketValue = ticket.codes.reduce((sum, code) => sum + (code.value * gameCount), 0);
+                    runnerTicketSales += ticketValue;
+                }
+
+                if (runnerTicketSales === 0) {
+                    continue;
+                }
+
+                // Calculate manager's provision from this runner
+                // Manager gets: (25% - runner_commission%) of runner's ticket sales
+                const managerProvisionPercentage = MANAGER_PROVISION_PERCENTAGE - runner.commission;
+                
+                if (managerProvisionPercentage <= 0) {
+                    console.debug(`Manager ${manager.id} gets 0% from runner ${runner.id} because runner commission (${runner.commission}%) >= 25%`);
+                    continue;
+                }
+
+                const managerProvisionFromRunner = Math.round((runnerTicketSales * managerProvisionPercentage) / 100);
+                
+                if (managerProvisionFromRunner > 0) {
+                    totalManagerProvisionFromRunners += managerProvisionFromRunner;
+                    console.debug(`  Runner ${runner.id}: ticket sales=${runnerTicketSales}, runner commission=${runner.commission}%, manager gets ${managerProvisionPercentage}% = ${managerProvisionFromRunner}`);
+                }
+            }
+
+            if (totalManagerProvisionFromRunners === 0) {
+                console.debug(`Manager ${manager.id} has no provision from runners, skipping`);
+                continue;
+            }
+
+            // Check if manager provision from runners already exists for this date
+            const existingManagerProvision = await this.db.balanceAction.findFirst({
+                where: {
+                    balance: {
+                        userID: manager.id
+                    },
+                    type: BalanceActionType.PROVISION,
+                    reference: {
+                        contains: `Provisie lopers ${amsterdamDate.toFormat('dd-MM-yyyy')}`
+                    },
+                    created: {
+                        gte: startOfDay,
+                        lte: endOfDay
+                    }
+                }
+            });
+
+            if (existingManagerProvision) {
+                console.debug(`Manager provision from runners already exists for ${manager.id} on this date, skipping`);
+                continue;
+            }
+
+            // Get or create balance for the manager
+            let balance = manager.balance;
+            if (!balance) {
+                const createdBalance = await this.db.balance.create({
+                    data: {
+                        userID: manager.id,
+                        balance: 0
+                    }
+                });
+                balance = { id: createdBalance.id };
+            }
+
+            // Create provision balance action for manager from runners (negative amount to deduct from balance)
+            await this.db.balanceAction.create({
+                data: {
+                    balanceID: balance.id,
+                    type: BalanceActionType.PROVISION,
+                    amount: -totalManagerProvisionFromRunners, // Negative to deduct from balance
+                    reference: `Provisie lopers ${amsterdamDate.toFormat('dd-MM-yyyy')}`,
+                    created: endOfDay // Set to end of day so it's the last action of the day
+                }
+            });
+
+            // Update balance
+            await this.db.balance.update({
+                where: { id: balance.id },
+                data: {
+                    balance: { decrement: totalManagerProvisionFromRunners }
+                }
+            });
+
+            console.debug(`Created manager provision from runners for ${manager.id}: -${totalManagerProvisionFromRunners}`);
         }
 
         console.debug('Completed creating provision balance actions');
