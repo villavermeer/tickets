@@ -1106,6 +1106,16 @@ export class TicketService extends Service implements ITicketService {
         const startDate = this.parseDateParameter(start, true);
         const endDate = this.parseDateParameter(end, false);
 
+        // Calculate day boundaries for the end date (in Amsterdam timezone)
+        // This is needed to include prizes/corrections created the next day that relate to the selected day
+        const endDateAmsterdam = DateTime.fromJSDate(endDate).setZone('Europe/Amsterdam');
+        const endDateDayStart = endDateAmsterdam.startOf('day').toUTC().toJSDate();
+        const endDateDayEnd = endDateAmsterdam.endOf('day').toUTC().toJSDate();
+
+        // Extend endDate by 24 hours to catch prizes/corrections created the next day
+        const endDateExtended = new Date(endDate);
+        endDateExtended.setHours(endDateExtended.getHours() + 24);
+
         // Get all users (runners and managers) with their balance info
         const users = await this.db.user.findMany({
             where: {
@@ -1127,12 +1137,30 @@ export class TicketService extends Service implements ITicketService {
         });
 
         // Get all balance actions within the period
+        // For PRIZE and CORRECTION, also include actions created up to 24 hours after endDate
+        // but only if their created date falls within the day boundaries of endDate
         const actions = await this.db.balanceAction.findMany({
             where: {
-                created: {
-                    gte: startDate,
-                    lte: endDate
-                },
+                OR: [
+                    // Regular actions within the period
+                    {
+                        created: {
+                            gte: startDate,
+                            lte: endDate
+                        }
+                    },
+                    // PRIZE and CORRECTION actions: include if created within endDate's day boundaries
+                    // OR created up to 24 hours after endDate (to catch late entries)
+                    {
+                        type: {
+                            in: [BalanceActionType.PRIZE, BalanceActionType.CORRECTION]
+                        },
+                        created: {
+                            gte: endDateDayStart,
+                            lte: endDateExtended
+                        }
+                    }
+                ],
                 balance: {
                     user: {
                         role: {
@@ -1148,6 +1176,17 @@ export class TicketService extends Service implements ITicketService {
                     }
                 }
             }
+        });
+
+        // Filter actions: for PRIZE and CORRECTION created after endDate, only include if
+        // their created date falls within the day boundaries of endDate
+        // (this ensures we only include prizes/corrections that relate to the selected day)
+        const filteredActions = actions.filter(action => {
+            if ((action.type === BalanceActionType.PRIZE || action.type === BalanceActionType.CORRECTION) && action.created > endDate) {
+                // Only include if created date falls within the day boundaries of endDate
+                return action.created >= endDateDayStart && action.created <= endDateDayEnd;
+            }
+            return true;
         });
 
         // Get tickets for commission calculation
@@ -1243,7 +1282,7 @@ export class TicketService extends Service implements ITicketService {
         }
 
         // Process actions within the period
-        actions.forEach((action) => {
+        filteredActions.forEach((action) => {
             const userId = action.balance?.userID;
             if (!userId) {
                 return;
