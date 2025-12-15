@@ -22,7 +22,7 @@ export interface IRaffleService {
 }
 
 @singleton()
-class RaffleService extends Service implements IRaffleService {
+export class RaffleService extends Service implements IRaffleService {
 
     constructor(
         @inject('Database') protected db: ExtendedPrismaClient
@@ -158,7 +158,7 @@ class RaffleService extends Service implements IRaffleService {
      */
     public async getWinningTicketsByDate(date: Date) {
         console.debug(`getWinningTicketsByDate called with date: ${date.toISOString()}`);
-        
+
         // ── 1 ── build immutable day-start / day-end boundaries in Amsterdam timezone
         const amsterdamDate = DateTime.fromJSDate(date).setZone('Europe/Amsterdam');
         const startOfDay = amsterdamDate.startOf('day').toUTC().toJSDate();
@@ -249,48 +249,169 @@ class RaffleService extends Service implements IRaffleService {
         return result; // [{ game: { … }, tickets: [...] }, …]
     }
 
-    /**
-     * Create provision balance actions for all users based on their ticket sales for the given date
-     * Provision = ticket sales * user's commission percentage
-     */
-    private async createProvisionBalanceActions(date: Date): Promise<void> {
-        console.debug(`Creating provision balance actions for date: ${date.toISOString()}`);
-        
+    public async updateProvisionForUser(userID: number, date: Date): Promise<void> {
         // Build day boundaries in Amsterdam timezone
         const amsterdamDate = DateTime.fromJSDate(date).setZone('Europe/Amsterdam');
         const startOfDay = amsterdamDate.startOf('day').toUTC().toJSDate();
         const endOfDay = amsterdamDate.endOf('day').toUTC().toJSDate();
 
-        console.debug(`Start of day: ${startOfDay.toISOString()}, End of day: ${endOfDay.toISOString()}`);
-
-        const MANAGER_PROVISION_PERCENTAGE = 25; // All managers get 25% total provision
-
-        // Get all users with their commission percentage
-        const users = await this.db.user.findMany({
-            select: {
-                id: true,
-                commission: true,
+        const user = await this.db.user.findUnique({
+            where: { id: userID },
+            include: {
                 balance: {
-                    select: {
-                        id: true
-                    }
-                }
-            },
-            where: {
-                commission: {
-                    gt: 0 // Only users with commission > 0
+                    select: { id: true }
                 }
             }
         });
 
-        console.debug(`Found ${users.length} users with commission > 0`);
+        if (!user || user.commission <= 0) return;
 
-        // For each user, calculate their ticket sales and create provision balance action
-        for (const user of users) {
-            // Get all tickets created by this user on the raffle date
-            const tickets = await this.db.ticket.findMany({
+        // Get all tickets created by this user on the raffle date
+        const tickets = await this.db.ticket.findMany({
+            where: {
+                creatorID: user.id,
+                created: {
+                    gte: startOfDay,
+                    lte: endOfDay
+                }
+            },
+            include: {
+                codes: true,
+                games: true
+            }
+        });
+
+        let totalTicketSales = 0;
+        if (tickets.length > 0) {
+            for (const ticket of tickets) {
+                const gameCount = ticket.games.length;
+                const ticketValue = ticket.codes.reduce((sum, code) => sum + (code.value * gameCount), 0);
+                totalTicketSales += ticketValue;
+            }
+        }
+
+        // Calculate provision (in cents)
+        const provisionAmount = Math.round((totalTicketSales * user.commission) / 100);
+
+        // Check if provision action already exists for this user and date
+        const existingProvision = await this.db.balanceAction.findFirst({
+            where: {
+                balance: {
+                    userID: user.id
+                },
+                type: BalanceActionType.PROVISION,
+                created: {
+                    gte: startOfDay,
+                    lte: endOfDay
+                }
+            }
+        });
+
+        if (existingProvision) {
+            // Check if amount is different (existingProvision.amount is negative)
+            // If provisionAmount is 100, existing should be -100.
+            if (existingProvision.amount !== -provisionAmount) {
+                console.debug(`Updating provision for user ${user.id}: was ${existingProvision.amount}, now ${-provisionAmount}`);
+
+                // Calculate difference to adjust balance
+                // If old was -100 (balance -100), new is -300. Diff is -200.
+                // balance.decrement(200).
+                const diff = (-provisionAmount) - existingProvision.amount;
+
+                await this.db.balanceAction.update({
+                    where: { id: existingProvision.id },
+                    data: { amount: -provisionAmount }
+                });
+
+                await this.db.balance.update({
+                    where: { id: existingProvision.balanceID },
+                    data: { balance: { increment: diff } }
+                });
+            }
+        } else if (provisionAmount > 0) {
+            // Create new if amount > 0
+            console.debug(`Creating new provision for user ${user.id}: ${provisionAmount}`);
+
+            // Get or create balance for the user
+            let balanceID = user.balance?.id;
+            if (!balanceID) {
+                const createdBalance = await this.db.balance.create({
+                    data: {
+                        userID: user.id,
+                        balance: 0
+                    }
+                });
+                balanceID = createdBalance.id;
+            }
+
+            await this.db.balanceAction.create({
+                data: {
+                    balanceID: balanceID,
+                    type: BalanceActionType.PROVISION,
+                    amount: -provisionAmount,
+                    reference: `Provisie ${amsterdamDate.toFormat('dd-MM-yyyy')}`,
+                    created: endOfDay
+                }
+            });
+
+            await this.db.balance.update({
+                where: { id: balanceID },
+                data: {
+                    balance: { decrement: provisionAmount }
+                }
+            });
+        }
+
+        // Check if this user has a manager and update manager's provision
+        const managerRunner = await this.db.managerRunner.findFirst({
+            where: { runnerID: userID }
+        });
+
+        if (managerRunner) {
+            await this.updateManagerProvision(managerRunner.managerID, date);
+        }
+    }
+
+    public async updateManagerProvision(managerID: number, date: Date): Promise<void> {
+        console.debug(`Updating manager provision for manager ${managerID} on date ${date.toISOString()}`);
+
+        const amsterdamDate = DateTime.fromJSDate(date).setZone('Europe/Amsterdam');
+        const startOfDay = amsterdamDate.startOf('day').toUTC().toJSDate();
+        const endOfDay = amsterdamDate.endOf('day').toUTC().toJSDate();
+        const MANAGER_PROVISION_PERCENTAGE = 25;
+
+        // Get manager and runners
+        const manager = await this.db.user.findUnique({
+            where: { id: managerID },
+            include: {
+                balance: { select: { id: true } }
+            }
+        });
+
+        if (!manager) return;
+
+        const managerRunners = await this.db.managerRunner.findMany({
+            where: { managerID: manager.id },
+            include: {
+                runner: {
+                    select: {
+                        id: true,
+                        commission: true
+                    }
+                }
+            }
+        });
+
+        if (managerRunners.length === 0) return;
+
+        let totalManagerProvisionFromRunners = 0;
+
+        for (const managerRunner of managerRunners) {
+            const runner = managerRunner.runner;
+
+            const runnerTickets = await this.db.ticket.findMany({
                 where: {
-                    creatorID: user.id,
+                    creatorID: runner.id,
                     created: {
                         gte: startOfDay,
                         lte: endOfDay
@@ -302,244 +423,124 @@ class RaffleService extends Service implements IRaffleService {
                 }
             });
 
-            if (tickets.length === 0) {
-                console.debug(`User ${user.id} has no tickets for this date, skipping provision`);
-                continue;
-            }
+            if (runnerTickets.length === 0) continue;
 
-            // Calculate total ticket sales (Inleg) for this user
-            // Each code value * number of games the ticket is entered in
-            let totalTicketSales = 0;
-            for (const ticket of tickets) {
+            let runnerTicketSales = 0;
+            for (const ticket of runnerTickets) {
                 const gameCount = ticket.games.length;
                 const ticketValue = ticket.codes.reduce((sum, code) => sum + (code.value * gameCount), 0);
-                totalTicketSales += ticketValue;
+                runnerTicketSales += ticketValue;
             }
 
-            if (totalTicketSales === 0) {
-                console.debug(`User ${user.id} has zero ticket sales, skipping provision`);
-                continue;
+            if (runnerTicketSales === 0) continue;
+
+            const managerProvisionPercentage = MANAGER_PROVISION_PERCENTAGE - runner.commission;
+
+            if (managerProvisionPercentage <= 0) continue;
+
+            const managerProvisionFromRunner = Math.round((runnerTicketSales * managerProvisionPercentage) / 100);
+
+            if (managerProvisionFromRunner > 0) {
+                totalManagerProvisionFromRunners += managerProvisionFromRunner;
             }
-
-            // Calculate provision (in cents)
-            const provisionAmount = Math.round((totalTicketSales * user.commission) / 100);
-
-            if (provisionAmount === 0) {
-                console.debug(`User ${user.id} provision is zero, skipping`);
-                continue;
-            }
-
-            console.debug(`User ${user.id}: ticket sales=${totalTicketSales}, commission=${user.commission}%, provision=${provisionAmount}`);
-
-            // Check if provision action already exists for this user and date
-            const existingProvision = await this.db.balanceAction.findFirst({
-                where: {
-                    balance: {
-                        userID: user.id
-                    },
-                    type: BalanceActionType.PROVISION,
-                    created: {
-                        gte: startOfDay,
-                        lte: endOfDay
-                    }
-                }
-            });
-
-            if (existingProvision) {
-                console.debug(`Provision already exists for user ${user.id} on this date, skipping`);
-                continue;
-            }
-
-            // Get or create balance for the user
-            let balance = user.balance;
-            if (!balance) {
-                const createdBalance = await this.db.balance.create({
-                    data: {
-                        userID: user.id,
-                        balance: 0
-                    }
-                });
-                balance = { id: createdBalance.id };
-            }
-
-            // Create provision balance action (negative amount to deduct from balance)
-            await this.db.balanceAction.create({
-                data: {
-                    balanceID: balance.id,
-                    type: BalanceActionType.PROVISION,
-                    amount: -provisionAmount, // Negative to deduct from balance
-                    reference: `Provisie ${amsterdamDate.toFormat('dd-MM-yyyy')}`,
-                    created: endOfDay // Set to end of day so it's the last action of the day
-                }
-            });
-
-            // Update balance
-            await this.db.balance.update({
-                where: { id: balance.id },
-                data: {
-                    balance: { decrement: provisionAmount }
-                }
-            });
-
-            console.debug(`Created provision balance action for user ${user.id}`);
         }
 
-        // NEW: Process manager provisions from their runners
-        console.debug('=== Processing Manager Provisions from Runners ===');
-        
-        // Get all managers
-        const managers = await this.db.user.findMany({
+        // Check if existing provision
+        const existingManagerProvision = await this.db.balanceAction.findFirst({
             where: {
-                role: Role.MANAGER
-            },
-            select: {
-                id: true,
-                name: true,
-                balance: {
-                    select: {
-                        id: true
-                    }
+                balance: { userID: manager.id },
+                type: BalanceActionType.PROVISION,
+                reference: {
+                    contains: `Provisie lopers ${amsterdamDate.toFormat('dd-MM-yyyy')}`
+                },
+                created: {
+                    gte: startOfDay,
+                    lte: endOfDay
                 }
             }
         });
 
-        console.debug(`Found ${managers.length} managers`);
+        if (existingManagerProvision) {
+            if (existingManagerProvision.amount !== -totalManagerProvisionFromRunners) {
+                console.debug(`Updating manager provision for ${manager.id}: was ${existingManagerProvision.amount}, now ${-totalManagerProvisionFromRunners}`);
 
-        for (const manager of managers) {
-            // Get all runners under this manager
-            const managerRunners = await this.db.managerRunner.findMany({
-                where: {
-                    managerID: manager.id
-                },
-                include: {
-                    runner: {
-                        select: {
-                            id: true,
-                            name: true,
-                            commission: true
-                        }
-                    }
-                }
-            });
+                const diff = (-totalManagerProvisionFromRunners) - existingManagerProvision.amount;
 
-            if (managerRunners.length === 0) {
-                console.debug(`Manager ${manager.id} has no runners, skipping`);
-                continue;
-            }
-
-            let totalManagerProvisionFromRunners = 0;
-
-            // For each runner, calculate manager's provision
-            for (const managerRunner of managerRunners) {
-                const runner = managerRunner.runner;
-                
-                // Get all tickets created by this runner on the raffle date
-                const runnerTickets = await this.db.ticket.findMany({
-                    where: {
-                        creatorID: runner.id,
-                        created: {
-                            gte: startOfDay,
-                            lte: endOfDay
-                        }
-                    },
-                    include: {
-                        codes: true,
-                        games: true
-                    }
+                await this.db.balanceAction.update({
+                    where: { id: existingManagerProvision.id },
+                    data: { amount: -totalManagerProvisionFromRunners }
                 });
 
-                if (runnerTickets.length === 0) {
-                    continue;
-                }
-
-                // Calculate total ticket sales for this runner
-                let runnerTicketSales = 0;
-                for (const ticket of runnerTickets) {
-                    const gameCount = ticket.games.length;
-                    const ticketValue = ticket.codes.reduce((sum, code) => sum + (code.value * gameCount), 0);
-                    runnerTicketSales += ticketValue;
-                }
-
-                if (runnerTicketSales === 0) {
-                    continue;
-                }
-
-                // Calculate manager's provision from this runner
-                // Manager gets: (25% - runner_commission%) of runner's ticket sales
-                const managerProvisionPercentage = MANAGER_PROVISION_PERCENTAGE - runner.commission;
-                
-                if (managerProvisionPercentage <= 0) {
-                    console.debug(`Manager ${manager.id} gets 0% from runner ${runner.id} because runner commission (${runner.commission}%) >= 25%`);
-                    continue;
-                }
-
-                const managerProvisionFromRunner = Math.round((runnerTicketSales * managerProvisionPercentage) / 100);
-                
-                if (managerProvisionFromRunner > 0) {
-                    totalManagerProvisionFromRunners += managerProvisionFromRunner;
-                    console.debug(`  Runner ${runner.id}: ticket sales=${runnerTicketSales}, runner commission=${runner.commission}%, manager gets ${managerProvisionPercentage}% = ${managerProvisionFromRunner}`);
-                }
+                await this.db.balance.update({
+                    where: { id: existingManagerProvision.balanceID },
+                    data: { balance: { increment: diff } }
+                });
             }
+        } else if (totalManagerProvisionFromRunners > 0) {
+            console.debug(`Creating new manager provision for ${manager.id}: ${totalManagerProvisionFromRunners}`);
 
-            if (totalManagerProvisionFromRunners === 0) {
-                console.debug(`Manager ${manager.id} has no provision from runners, skipping`);
-                continue;
-            }
-
-            // Check if manager provision from runners already exists for this date
-            const existingManagerProvision = await this.db.balanceAction.findFirst({
-                where: {
-                    balance: {
-                        userID: manager.id
-                    },
-                    type: BalanceActionType.PROVISION,
-                    reference: {
-                        contains: `Provisie lopers ${amsterdamDate.toFormat('dd-MM-yyyy')}`
-                    },
-                    created: {
-                        gte: startOfDay,
-                        lte: endOfDay
-                    }
-                }
-            });
-
-            if (existingManagerProvision) {
-                console.debug(`Manager provision from runners already exists for ${manager.id} on this date, skipping`);
-                continue;
-            }
-
-            // Get or create balance for the manager
-            let balance = manager.balance;
-            if (!balance) {
+            let balanceID = manager.balance?.id;
+            if (!balanceID) {
                 const createdBalance = await this.db.balance.create({
                     data: {
                         userID: manager.id,
                         balance: 0
                     }
                 });
-                balance = { id: createdBalance.id };
+                balanceID = createdBalance.id;
             }
 
-            // Create provision balance action for manager from runners (negative amount to deduct from balance)
             await this.db.balanceAction.create({
                 data: {
-                    balanceID: balance.id,
+                    balanceID: balanceID,
                     type: BalanceActionType.PROVISION,
-                    amount: -totalManagerProvisionFromRunners, // Negative to deduct from balance
+                    amount: -totalManagerProvisionFromRunners,
                     reference: `Provisie lopers ${amsterdamDate.toFormat('dd-MM-yyyy')}`,
-                    created: endOfDay // Set to end of day so it's the last action of the day
+                    created: endOfDay
                 }
             });
 
-            // Update balance
             await this.db.balance.update({
-                where: { id: balance.id },
+                where: { id: balanceID },
                 data: {
                     balance: { decrement: totalManagerProvisionFromRunners }
                 }
             });
+        }
+    }
 
-            console.debug(`Created manager provision from runners for ${manager.id}: -${totalManagerProvisionFromRunners}`);
+    /**
+     * Create provision balance actions for all users based on their ticket sales for the given date
+     * Provision = ticket sales * user's commission percentage
+     * NOTE: Now delegates to updateProvisionForUser and updateManagerProvision
+     */
+    private async createProvisionBalanceActions(date: Date): Promise<void> {
+        console.debug(`Creating provision balance actions for date: ${date.toISOString()}`);
+
+        // Get all users with commission > 0
+        const users = await this.db.user.findMany({
+            select: { id: true },
+            where: { commission: { gt: 0 } }
+        });
+
+        console.debug(`Found ${users.length} users with commission > 0`);
+
+        for (const user of users) {
+            await this.updateProvisionForUser(user.id, date);
+        }
+
+        console.debug('=== Processing Manager Provisions from Runners ===');
+
+        // Get all managers
+        const managers = await this.db.user.findMany({
+            where: { role: Role.MANAGER },
+            select: { id: true }
+        });
+
+        console.debug(`Found ${managers.length} managers`);
+
+        for (const manager of managers) {
+            await this.updateManagerProvision(manager.id, date);
         }
 
         console.debug('Completed creating provision balance actions');
@@ -551,7 +552,7 @@ class RaffleService extends Service implements IRaffleService {
      */
     private async createPrizeBalanceActions(date: Date): Promise<void> {
         console.debug(`Creating prize balance actions for date: ${date.toISOString()}`);
-        
+
         // Build day boundaries in Amsterdam timezone
         const amsterdamDate = DateTime.fromJSDate(date).setZone('Europe/Amsterdam');
         const startOfDay = amsterdamDate.startOf('day').toUTC().toJSDate();
@@ -578,11 +579,11 @@ class RaffleService extends Service implements IRaffleService {
         console.debug(`Found ${raffles.length} raffles for this date`);
 
         // Group winning codes by game, keeping track of raffle IDs
-        const winningCodesByGame = new Map<number, { 
+        const winningCodesByGame = new Map<number, {
             winningCodes: Array<{ code: string; order: number }>;
             raffleIDs: number[];
         }>();
-        
+
         for (const raffle of raffles) {
             if (!winningCodesByGame.has(raffle.gameID)) {
                 winningCodesByGame.set(raffle.gameID, {
@@ -590,12 +591,12 @@ class RaffleService extends Service implements IRaffleService {
                     raffleIDs: []
                 });
             }
-            
+
             const gameData = winningCodesByGame.get(raffle.gameID)!;
             if (!gameData.raffleIDs.includes(raffle.id)) {
                 gameData.raffleIDs.push(raffle.id);
             }
-            
+
             const codeToOrder = new Map<string, number>();
             for (const code of raffle.codes) {
                 if (!codeToOrder.has(code.code)) {
@@ -618,7 +619,7 @@ class RaffleService extends Service implements IRaffleService {
             if (winningCodes.length === 0) continue;
 
             const winningValues = winningCodes.map(wc => parseInt(wc.code, 10));
-            
+
             // Find all tickets for this game on this day
             const allTickets = await this.db.ticket.findMany({
                 where: {
@@ -657,7 +658,7 @@ class RaffleService extends Service implements IRaffleService {
 
                     // Sum stake values for all instances of this code
                     const totalStake = orderedInstances.reduce((sum, instance) => sum + instance.value, 0);
-                    
+
                     // Calculate prize for this code using total stake
                     const firstInstance = orderedInstances[0];
                     const prizeAmount = this.calculatePrizeAmount(
@@ -689,14 +690,14 @@ class RaffleService extends Service implements IRaffleService {
 
                     if (existingPrize) {
                         if (existingPrize.amount !== -prizeAmount) {
-                            console.warn(`Prize action ${existingPrize.id} for ticket ${ticket.id}, code ${firstInstance.code} has mismatched amount (${existingPrize.amount/100} vs ${prizeAmount/100})`);
+                            console.warn(`Prize action ${existingPrize.id} for ticket ${ticket.id}, code ${firstInstance.code} has mismatched amount (${existingPrize.amount / 100} vs ${prizeAmount / 100})`);
                         } else {
-                            console.debug(`Prize action already exists for ticket ${ticket.id}, code ${firstInstance.code}, amount: ${existingPrize.amount/100} EUR`);
+                            console.debug(`Prize action already exists for ticket ${ticket.id}, code ${firstInstance.code}, amount: ${existingPrize.amount / 100} EUR`);
                         }
                         continue;
                     }
 
-                    console.debug(`Creating prize action for ticket ${ticket.id}, code ${firstInstance.code} (${codeInstances.length} instances, total stake: ${totalStake/100} EUR), amount: ${prizeAmount/100} EUR, user: ${ticket.creator.id}`);
+                    console.debug(`Creating prize action for ticket ${ticket.id}, code ${firstInstance.code} (${codeInstances.length} instances, total stake: ${totalStake / 100} EUR), amount: ${prizeAmount / 100} EUR, user: ${ticket.creator.id}`);
 
                     // Get or create balance for the user
                     let balance = await this.db.balance.findUnique({
@@ -733,7 +734,7 @@ class RaffleService extends Service implements IRaffleService {
                         }
                     });
 
-                    console.debug(`Created prize action for ticket ${ticket.id}, code ${firstInstance.code}: ${prizeAmount/100} EUR`);
+                    console.debug(`Created prize action for ticket ${ticket.id}, code ${firstInstance.code}: ${prizeAmount / 100} EUR`);
                 }
             }
         }
@@ -773,12 +774,12 @@ class RaffleService extends Service implements IRaffleService {
             if (multiplier > 0) {
                 const prize = stakeValue * multiplier;
                 total += prize;
-                console.debug(`  Matched winning code ${winningCode} (order ${order}) with played code ${playedCode}: ${prize/100} EUR`);
+                console.debug(`  Matched winning code ${winningCode} (order ${order}) with played code ${playedCode}: ${prize / 100} EUR`);
             }
         }
 
         if (total > 0) {
-            console.debug(`  Total prize for code ${playedCode}: ${total/100} EUR`);
+            console.debug(`  Total prize for code ${playedCode}: ${total / 100} EUR`);
         }
         return total;
     }
