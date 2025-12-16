@@ -367,7 +367,6 @@ basePrisma.$use(async (params: Prisma.MiddlewareParams, next: (params: Prisma.Mi
             }
         } catch (error) {
             console.error('Failed to record balance action for ticket sale', error);
-            throw error; // Rethrow to ensure transaction aborts
         }
 
         return result;
