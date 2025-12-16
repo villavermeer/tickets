@@ -167,11 +167,7 @@ export class TicketService extends Service implements ITicketService {
             throw new ValidationError("Er is iets misgegaan bij het aanmaken van het ticket.");
         }
 
-        // Check daily limits for all codes (skip for admin accounts and daily tickets)
-        const user = Context.get("user");
-        if (user.role !== 'ADMIN' && !data.relayed) {
-            await this.checkDailyLimits(data.codes, data.games, data.runnerID, nowNL);
-        }
+
 
         // Compute the earliest cut-off among all chosen games
         const earliestCutOff = games
@@ -185,8 +181,16 @@ export class TicketService extends Service implements ITicketService {
             );
         }
 
+        const user = Context.get("user");
+
+
         // Use a transaction to ensure data consistency
         return await this.db.$transaction(async (tx) => {
+            // Check daily limits inside the transaction to prevent race conditions
+            if (user.role !== 'ADMIN' && !data.relayed) {
+                await this.checkDailyLimits(data.codes, data.games, data.runnerID, nowNL, tx);
+            }
+
             const ticket = await tx.ticket.create({
                 data: {
                     name: data.name,
@@ -215,6 +219,8 @@ export class TicketService extends Service implements ITicketService {
             }
 
             return ticket;
+        }, {
+            isolationLevel: Prisma.TransactionIsolationLevel.Serializable
         });
     }
 
@@ -333,7 +339,11 @@ export class TicketService extends Service implements ITicketService {
                     }
 
                     const nowNL = DateTime.now().setZone("Europe/Amsterdam");
-                    await this.checkDailyLimits(codesToCreate, currentGames, ticket.creatorID, nowNL);
+                    await this.db.$transaction(async (tx) => {
+                        await this.checkDailyLimits(codesToCreate, currentGames, ticket.creatorID, nowNL, tx);
+                    }, {
+                        isolationLevel: Prisma.TransactionIsolationLevel.Serializable
+                    });
                 }
             }
 
@@ -2335,18 +2345,19 @@ export class TicketService extends Service implements ITicketService {
         return now.plus({ days: 1 }).startOf("day"); // next-day midnight
     }
 
-    private async checkDailyLimits(codes: any[], games: number[], runnerID: number, nowNL: DateTime): Promise<void> {
+    private async checkDailyLimits(codes: any[], games: number[], runnerID: number, nowNL: DateTime, tx?: any): Promise<void> {
         const startOfDay = nowNL.startOf('day').toJSDate();
         const endOfDay = nowNL.endOf('day').toJSDate();
 
         const uniqueGameIds = Array.from(new Set(games));
+        const db = tx || this.db;
         const gameNameRecords = uniqueGameIds.length
-            ? await this.db.game.findMany({
+            ? await db.game.findMany({
                 where: { id: { in: uniqueGameIds } },
                 select: { id: true, name: true }
             })
             : [];
-        const gameNameMap = new Map<number, string>(gameNameRecords.map(g => [g.id, g.name || `Game ${g.id}`]));
+        const gameNameMap = new Map<number, string>(gameNameRecords.map((g: { id: number; name: string | null }) => [g.id, g.name || `Game ${g.id}`]));
 
         type LimitBreach = { code: string; codeLength: number; gameID: number; limit: number };
         const globalBreaches: LimitBreach[] = [];
@@ -2397,7 +2408,7 @@ export class TicketService extends Service implements ITicketService {
                     const globalCacheKey = `${cacheKeyBase}:global`;
                     let currentTotal = globalTotalsCache.get(globalCacheKey);
                     if (currentTotal === undefined) {
-                        const aggregate = await this.db.code.aggregate({
+                        const aggregate = await db.code.aggregate({
                             where: {
                                 code: codeString,
                                 daily: false, // Exclude daily tickets from limit calculations
@@ -2405,12 +2416,15 @@ export class TicketService extends Service implements ITicketService {
                             },
                             _sum: { value: true }
                         });
-                        currentTotal = aggregate._sum.value ?? 0;
+                        currentTotal = (aggregate._sum.value ?? 0) as number;
                         globalTotalsCache.set(globalCacheKey, currentTotal);
                     }
 
+                    // Ensure currentTotal is treated as number
+                    const safeCurrentTotal = currentTotal as number;
+
                     const pendingAddition = pendingGlobalAdds.get(globalCacheKey) ?? 0;
-                    const projectedTotal = currentTotal + pendingAddition + newCodeValue;
+                    const projectedTotal = safeCurrentTotal + pendingAddition + newCodeValue;
 
                     if (projectedTotal > globalLimit) {
                         const breachKey = globalCacheKey;
@@ -2428,7 +2442,7 @@ export class TicketService extends Service implements ITicketService {
                     const userCacheKey = `${cacheKeyBase}:user:${runnerID}`;
                     let currentUserTotal = userTotalsCache.get(userCacheKey);
                     if (currentUserTotal === undefined) {
-                        const aggregate = await this.db.code.aggregate({
+                        const aggregate = await db.code.aggregate({
                             where: {
                                 code: codeString,
                                 daily: false, // Exclude daily tickets from limit calculations
@@ -2439,12 +2453,15 @@ export class TicketService extends Service implements ITicketService {
                             },
                             _sum: { value: true }
                         });
-                        currentUserTotal = aggregate._sum.value ?? 0;
+                        currentUserTotal = (aggregate._sum.value ?? 0) as number;
                         userTotalsCache.set(userCacheKey, currentUserTotal);
                     }
 
+                    // Ensure currentUserTotal is treated as number
+                    const safeCurrentUserTotal = currentUserTotal as number;
+
                     const pendingUserAddition = pendingUserAdds.get(userCacheKey) ?? 0;
-                    const projectedUserTotal = currentUserTotal + pendingUserAddition + newCodeValue;
+                    const projectedUserTotal = safeCurrentUserTotal + pendingUserAddition + newCodeValue;
 
                     if (projectedUserTotal > userLimit) {
                         if (!userBreachKeys.has(userCacheKey)) {
