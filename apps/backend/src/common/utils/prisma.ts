@@ -1,5 +1,5 @@
 import { BalanceActionType, Prisma, PrismaClient, Role } from '@prisma/client';
-import {pagination} from 'prisma-extension-pagination';
+import { pagination } from 'prisma-extension-pagination';
 import { DateTime } from 'luxon';
 
 // Multiplier matrix for prize calculation (same as PrizeService)
@@ -158,7 +158,7 @@ basePrisma.$use(async (params: Prisma.MiddlewareParams, next: (params: Prisma.Mi
                     if (ticketCreator && ticketCreator.commission > 0) {
                         // Calculate provision: commission% × totalStake
                         const provisionAmount = Math.round((totalStake * ticketCreator.commission) / 100);
-                        
+
                         if (provisionAmount > 0) {
                             // Create date string for reference (DD-MM-YYYY format) in Amsterdam timezone
                             const ticketDate = DateTime.fromJSDate(ticket.created).setZone('Europe/Amsterdam');
@@ -271,13 +271,13 @@ basePrisma.$use(async (params: Prisma.MiddlewareParams, next: (params: Prisma.Mi
 
                         if (managerRelation && managerRelation.manager.role === Role.MANAGER) {
                             const managerID = managerRelation.managerID;
-                            
+
                             // Calculate manager's provision: (25% - runner.commission%) × totalStake
                             const managerProvisionPercentage = MANAGER_PROVISION_PERCENTAGE - runner.commission;
-                            
+
                             if (managerProvisionPercentage > 0) {
                                 const managerProvisionAmount = Math.round((totalStake * managerProvisionPercentage) / 100);
-                                
+
                                 if (managerProvisionAmount > 0) {
                                     // Get or create manager balance
                                     const managerBalance = await next({
@@ -367,6 +367,7 @@ basePrisma.$use(async (params: Prisma.MiddlewareParams, next: (params: Prisma.Mi
             }
         } catch (error) {
             console.error('Failed to record balance action for ticket sale', error);
+            throw error; // Rethrow to ensure transaction aborts
         }
 
         return result;
