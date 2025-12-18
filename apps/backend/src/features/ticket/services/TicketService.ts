@@ -2210,36 +2210,32 @@ export class TicketService extends Service implements ITicketService {
         if (hasSuper4) {
             // Super 4 rules
             if (codeLength === 4) {
-                // 4 digits: Een euro of hoger gaat 0.50 vanaf
-                if (valueInEuros >= 1) {
-                    deductionInEuros = 0.50;
+                // 4 digit codes > above 1.50 we deduct 1 euro
+                if (valueInEuros > 1.50) {
+                    deductionInEuros = 1;
                 }
             } else if (codeLength === 3) {
-                // 3 digits: Alles vanaf 2.50 halen we 0.50 vanaf
-                if (valueInEuros >= 2.50) {
-                    deductionInEuros = 0.50;
-                }
+                // 3 digit codes > we dont play these numbers at all. filters them
+                return { deduction: 0, finalValue: 0 };
             } else if (codeLength === 2) {
-                // 2 digits: Deze spelen we niet - should be filtered out
+                // 2 digit codes > we dont play these numbers at all. filters them
                 return { deduction: 0, finalValue: 0 };
             }
         } else {
             // All games except Super 4
             if (codeLength === 4) {
-                // 4 digits: Alles wat boven 1 euro gespeeld wordt halen we 1 euro vanaf
-                if (valueInEuros > 1) {
-                    deductionInEuros = 1;
+                // 4 digit codes > above 3 euros we deduct 50 cents
+                if (valueInEuros > 3) {
+                    deductionInEuros = 0.50;
                 }
             } else if (codeLength === 3) {
-                // 3 digits: Inleg van 3.75 tot 7 euro halen we 2 euro vanaf. Alles vanaf 7 euro of hoger halen we 5 euro vanaf
-                if (valueInEuros >= 3.75 && valueInEuros < 7) {
-                    deductionInEuros = 2;
-                } else if (valueInEuros >= 7) {
+                // 3 digit codes > above 20 euros we deduct 5 euro
+                if (valueInEuros > 20) {
                     deductionInEuros = 5;
                 }
             } else if (codeLength === 2) {
-                // 2 digits: No deduction applied
-                deductionInEuros = 0;
+                // 2 digit codes > we dont play these numbers at all. filters them
+                return { deduction: 0, finalValue: 0 };
             }
         }
 
@@ -2253,36 +2249,6 @@ export class TicketService extends Service implements ITicketService {
         };
     }
 
-    private calculateDeductionForTotal = (totalValue: number, gameIds: number[]): { deduction: number; finalValue: number } => {
-        const hasSuper4 = gameIds.includes(7);
-
-        // Convert cents to euros for easier calculation
-        const valueInEuros = totalValue / 100;
-        let deductionInEuros = 0;
-
-        if (hasSuper4) {
-            // Super 4 rules - apply to total value
-            if (valueInEuros >= 1.00) {
-                // For Super 4, deduct 0.50 euro from total if >= 1.00 euro
-                deductionInEuros = 0.50;
-            }
-        } else {
-            // All games except Super 4 - apply to total value
-            if (valueInEuros > 1.00) {
-                // For non-Super4 games, deduct 1 euro from total if > 1.00 euro
-                deductionInEuros = 1.00;
-            }
-        }
-
-        // Convert back to cents
-        const deductionInCents = Math.round(deductionInEuros * 100);
-        const finalValueInCents = totalValue - deductionInCents;
-
-        return {
-            deduction: deductionInCents,
-            finalValue: finalValueInCents
-        };
-    }
 
     private commitRelayableTickets = async (start: string, end: string) => {
         return await this.db.$transaction(async (tx) => {
