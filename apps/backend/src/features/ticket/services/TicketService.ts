@@ -2004,13 +2004,13 @@ export class TicketService extends Service implements ITicketService {
                 const valueInEuros = totalAllDay / 100;
                 let meetsThreshold = false;
                 if (isSuper4) {
-                    if (e.codeLength === 4) meetsThreshold = valueInEuros >= 1.00;
-                    else if (e.codeLength === 3) meetsThreshold = valueInEuros >= 2.50;
-                    else if (e.codeLength === 2) meetsThreshold = false; // All 2-digit codes excluded
+                    if (e.codeLength === 4) meetsThreshold = valueInEuros > 1.50;
+                    else if (e.codeLength === 3) meetsThreshold = false; // 3-digit codes filtered out
+                    else if (e.codeLength === 2) meetsThreshold = false; // 2-digit codes filtered out
                 } else {
-                    if (e.codeLength === 4) meetsThreshold = valueInEuros >= 1.25;
-                    else if (e.codeLength === 3) meetsThreshold = valueInEuros >= 3.75;
-                    else if (e.codeLength === 2) meetsThreshold = false; // All 2-digit codes excluded
+                    if (e.codeLength === 4) meetsThreshold = valueInEuros > 3;
+                    else if (e.codeLength === 3) meetsThreshold = valueInEuros > 20;
+                    else if (e.codeLength === 2) meetsThreshold = false; // 2-digit codes filtered out
                 }
                 if (!meetsThreshold) continue;
 
@@ -2155,14 +2155,14 @@ export class TicketService extends Service implements ITicketService {
                 const valueInEuros = entry.value / 100;
                 if (hasSuper4) {
                     // Super 4 thresholds
-                    if (entry.codeLength === 4) return valueInEuros >= 1.00;
-                    if (entry.codeLength === 3) return valueInEuros >= 2.50;
-                    if (entry.codeLength === 2) return false; // never played on Super4
+                    if (entry.codeLength === 4) return valueInEuros > 1.50;
+                    if (entry.codeLength === 3) return false; // 3-digit codes filtered out
+                    if (entry.codeLength === 2) return false; // 2-digit codes filtered out
                 } else {
                     // Default game thresholds
-                    if (entry.codeLength === 4) return valueInEuros >= 1.25; // 1.25+ then deduct 1
-                    if (entry.codeLength === 3) return valueInEuros >= 3.75;  // 3.75-6.99 => -2, 7+ => -5
-                    if (entry.codeLength === 2) return false; // All 2-digit codes excluded
+                    if (entry.codeLength === 4) return valueInEuros > 3;
+                    if (entry.codeLength === 3) return valueInEuros > 20;
+                    if (entry.codeLength === 2) return false; // 2-digit codes filtered out
                 }
                 return false;
             });
