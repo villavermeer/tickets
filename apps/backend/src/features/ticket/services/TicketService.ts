@@ -727,6 +727,25 @@ export class TicketService extends Service implements ITicketService {
         return buffer;
     }
 
+    private getGameAbbreviation = (gameName: string): string => {
+        const gameMap: Record<string, string> = {
+            'WNK': 'WNK',
+            'Diario': 'D',
+            'Flamingo': 'F',
+            'Santo': 'S',
+            'Smart evening': 'SM ev',
+            'Smart Noon': 'SM n',
+            'Philipsburg evening': 'PH ev',
+            'Philipsburg noon': 'PH n',
+            'Super 4': 'Super 4'
+        };
+        return gameMap[gameName] || gameName;
+    };
+
+    private formatGameCombination = (gameCombination: string[]): string => {
+        return gameCombination.map(game => this.getGameAbbreviation(game)).join(', ');
+    };
+
     public exportRelayableTicketsPDF = async (
         start: string,
         end: string,
@@ -764,33 +783,52 @@ export class TicketService extends Service implements ITicketService {
             const bottomLimit = doc.page.height - doc.page.margins.bottom;
 
             const rowHeight = 20;
-            const titleHeight = 18;
 
-            // 1 column for code/description, 1 for amount
-            // Use a compact fixed table width so the table is only as wide
-            // as needed for the code and value, instead of stretching full-page.
+            // Column widths: Code, Amount, Games
             const codeColWidth = 100;
-            const amountColWidth = 100;
-            const tableWidth = codeColWidth + amountColWidth;
+            const amountColWidth = 80;
+            const gamesColWidth = 120;
+            const tableWidth = codeColWidth + amountColWidth + gamesColWidth;
 
             let y = top;
-            let isFirstSection = true;
+            let tableHeaderDrawn = false;
 
-            const drawTableHeader = (firstColLabel: string) => {
+            const ensureNewPage = () => {
+                if (y + rowHeight * 3 > bottomLimit) {
+                    doc.addPage();
+                    y = top;
+                    tableHeaderDrawn = false;
+                }
+            };
+
+            const drawTableHeader = () => {
+                if (tableHeaderDrawn) return;
+                
+                ensureNewPage();
+                
                 doc.save();
                 doc.rect(left, y, tableWidth, rowHeight).fill('#f2f4f7');
                 doc.fillColor('#000000');
                 doc.font('Helvetica-Bold').fontSize(11);
-                doc.text(firstColLabel, left + 8, y + 4, { width: codeColWidth - 16 });
-                doc.text('Bedrag', left + codeColWidth, y + 4, {
+                doc.text('Code', left + 8, y + 4, { width: codeColWidth - 16 });
+                doc.text('Bedrag', left + codeColWidth + 8, y + 4, {
                     width: amountColWidth - 16,
                     align: 'right'
                 });
+                doc.text('Games', left + codeColWidth + amountColWidth + 8, y + 4, { width: gamesColWidth - 16 });
                 doc.restore();
                 y += rowHeight;
+                tableHeaderDrawn = true;
             };
 
-            const drawEntryRow = (entry: RelayableTicketEntry, striped: boolean) => {
+            const drawEntryRow = (entry: RelayableTicketEntry, games: string, striped: boolean) => {
+                ensureNewPage();
+                
+                // Redraw header if we're on a new page
+                if (!tableHeaderDrawn) {
+                    drawTableHeader();
+                }
+                
                 const isVasteLijst = entry.code === 'Vaste lijst';
 
                 doc.save();
@@ -805,57 +843,51 @@ export class TicketService extends Service implements ITicketService {
                 doc.fillColor('#000000');
                 doc.font(isVasteLijst ? 'Helvetica-Oblique' : 'Helvetica').fontSize(11);
                 doc.text(entry.code, left + 8, y + 4, { width: codeColWidth - 16 });
-                doc.text((entry.final / 100).toFixed(2), left + codeColWidth, y + 4, {
+                doc.text((entry.final / 100).toFixed(2), left + codeColWidth + 8, y + 4, {
                     width: amountColWidth - 16,
                     align: 'right'
                 });
+                doc.text(games, left + codeColWidth + amountColWidth + 8, y + 4, { width: gamesColWidth - 16 });
                 doc.restore();
                 y += rowHeight;
             };
 
             const drawTotalRow = (label: string, totalCents: number) => {
+                ensureNewPage();
+                
+                // Redraw header if we're on a new page
+                if (!tableHeaderDrawn) {
+                    drawTableHeader();
+                }
+                
                 doc.save();
                 doc.rect(left, y, tableWidth, rowHeight).fill('#e8ebed');
                 doc.fillColor('#000000');
                 doc.font('Helvetica-Bold').fontSize(11);
                 doc.text(label, left + 8, y + 4, { width: codeColWidth - 16 });
-                doc.text((totalCents / 100).toFixed(2), left + codeColWidth, y + 4, {
+                doc.text((totalCents / 100).toFixed(2), left + codeColWidth + 8, y + 4, {
                     width: amountColWidth - 16,
                     align: 'right'
                 });
+                doc.text('', left + codeColWidth + amountColWidth + 8, y + 4, { width: gamesColWidth - 16 }); // Empty games column
                 doc.restore();
                 y += rowHeight;
-            };
-
-            const startSectionPage = (title: string, firstColLabel: string, continuation: boolean) => {
-                if (!isFirstSection) {
-                    doc.addPage();
-                }
-                isFirstSection = false;
-                y = top;
-
-                const fullTitle = continuation ? `${title} (vervolg)` : title;
-                doc.font('Helvetica-Bold')
-                    .fontSize(12)
-                    .fillColor('#000000');
-
-                // Calculate actual height of wrapped title text
-                const titleHeightActual = doc.heightOfString(fullTitle, { width: usableWidth });
-                doc.text(fullTitle, left, y, { width: usableWidth });
-
-                // Add spacing after title (title height + some padding)
-                y += titleHeightActual + 8;
-
-                drawTableHeader(firstColLabel);
+                
+                // Add spacing after total row
+                y += 8;
             };
 
             const renderSection = (
-                title: string,
                 entries: RelayableTicketEntry[],
                 totalCents: number,
-                firstColLabel = 'Code'
+                gameCombination: string[]
             ) => {
                 if (!entries.length && totalCents === 0) return;
+
+                // Draw table header if not already drawn
+                if (!tableHeaderDrawn) {
+                    drawTableHeader();
+                }
 
                 // Ensure "Vaste lijst" appears at the end
                 const ordered: RelayableTicketEntry[] = [
@@ -863,26 +895,14 @@ export class TicketService extends Service implements ITicketService {
                     ...entries.filter(e => e.code === 'Vaste lijst')
                 ];
 
-                startSectionPage(title, firstColLabel, false);
-
+                const gamesString = this.formatGameCombination(gameCombination);
                 let stripe = false;
-                let i = 0;
 
-                while (i < ordered.length) {
-                    if (y + rowHeight > bottomLimit) {
-                        // New physical page, same table
-                        startSectionPage(title, firstColLabel, true);
-                        stripe = false;
-                    }
-
-                    drawEntryRow(ordered[i], stripe);
+                for (const entry of ordered) {
+                    drawEntryRow(entry, gamesString, stripe);
                     stripe = !stripe;
-                    i++;
                 }
 
-                if (y + rowHeight > bottomLimit) {
-                    startSectionPage(title, firstColLabel, true);
-                }
                 drawTotalRow('Totaal', totalCents);
             };
 
@@ -911,7 +931,10 @@ export class TicketService extends Service implements ITicketService {
                 }
             });
 
-            // Non-Super4 chunks: each chunk = its own section/table (and therefore its own page)
+            // Draw table header once at the start
+            drawTableHeader();
+
+            // Non-Super4 chunks: render each chunk as a block
             for (const chunk of nonSuper4Chunks) {
                 if (!chunk.entries || !chunk.entries.length) continue;
 
@@ -921,13 +944,13 @@ export class TicketService extends Service implements ITicketService {
                 );
 
                 renderSection(
-                    chunk.gameCombination.join(', '),
                     chunk.entries as RelayableTicketEntry[],
-                    totalCents
+                    totalCents,
+                    chunk.gameCombination
                 );
             }
 
-            // Super4 chunks: one section per chunk (still 1 table per page)
+            // Super4 chunks: render each chunk as a block
             for (const chunk of super4Chunks) {
                 if (!chunk.entries || !chunk.entries.length) continue;
 
@@ -937,9 +960,9 @@ export class TicketService extends Service implements ITicketService {
                 );
 
                 renderSection(
-                    'Super 4',
                     chunk.entries as RelayableTicketEntry[],
-                    totalCents
+                    totalCents,
+                    chunk.gameCombination
                 );
             }
 
@@ -972,13 +995,13 @@ export class TicketService extends Service implements ITicketService {
                     grandTotal += totalForGame;
 
                     renderSection(
-                        `Gespeelde daglijkse tickets – ${gameName}`,
                         entries,
-                        totalForGame
+                        totalForGame,
+                        [gameName]
                     );
                 }
 
-                // Grand total (if multiple games): its own small table on its own page
+                // Grand total (if multiple games)
                 if (codesByGame.size > 1) {
                     const totalEntry: RelayableTicketEntry = {
                         code: 'Totaal alle daglijkse tickets',
@@ -989,10 +1012,9 @@ export class TicketService extends Service implements ITicketService {
                     } as any;
 
                     renderSection(
-                        'Gespeelde daglijkse tickets – totaal',
                         [totalEntry],
                         grandTotal,
-                        'Omschrijving'
+                        []
                     );
                 }
             }
@@ -2224,14 +2246,14 @@ export class TicketService extends Service implements ITicketService {
         } else {
             // All games except Super 4
             if (codeLength === 4) {
-                // 4 digit codes > above 3 euros we deduct 50 cents
+                // 4 digit codes > above 3 euros we deduct 3 euro
                 if (valueInEuros > 3) {
-                    deductionInEuros = 0.50;
+                    deductionInEuros = 3;
                 }
             } else if (codeLength === 3) {
-                // 3 digit codes > above 20 euros we deduct 5 euro
+                // 3 digit codes > above 20 euros we deduct 10 euro
                 if (valueInEuros > 20) {
-                    deductionInEuros = 5;
+                    deductionInEuros = 10;
                 }
             } else if (codeLength === 2) {
                 // 2 digit codes > we dont play these numbers at all. filters them
