@@ -785,9 +785,9 @@ export class TicketService extends Service implements ITicketService {
             const rowHeight = 20;
 
             // Column widths: Code, Amount, Games
-            const codeColWidth = 100;
+            const codeColWidth = 70;
             const amountColWidth = 80;
-            const gamesColWidth = 120;
+            const gamesColWidth = 200;
             const tableWidth = codeColWidth + amountColWidth + gamesColWidth;
 
             let y = top;
@@ -873,8 +873,8 @@ export class TicketService extends Service implements ITicketService {
                 doc.restore();
                 y += rowHeight;
                 
-                // Add spacing after total row
-                y += 8;
+                // Add spacing after total row (between blocks)
+                y += 16;
             };
 
             const renderSection = (

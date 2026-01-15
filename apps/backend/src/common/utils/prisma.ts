@@ -13,6 +13,8 @@ const MULTIPLIERS = {
 } as const;
 
 // Calculate prize amount for a winning code
+// stakeValue is in cents, multipliers are meant to be applied to euros
+// So we convert stakeValue to euros, apply multiplier, then convert back to cents
 function calculatePrizeAmount(
     playedCode: string,
     stakeValue: number,
@@ -23,6 +25,9 @@ function calculatePrizeAmount(
     const isSuper4 = gameID === 7;
     let total = 0;
 
+    // Convert stakeValue from cents to euros for multiplier calculation
+    const stakeInEuros = stakeValue / 100;
+
     for (const { code: winningCode, order } of winningCodesWithOrder) {
         if (!winningCode.endsWith(playedCode)) continue;
 
@@ -31,7 +36,9 @@ function calculatePrizeAmount(
             : ((MULTIPLIERS.DEFAULT as any)[order]?.[codeLength] ?? 0);
 
         if (multiplier > 0) {
-            total += stakeValue * multiplier;
+            // Apply multiplier to euros, then convert back to cents
+            const prizeInEuros = stakeInEuros * multiplier;
+            total += Math.round(prizeInEuros * 100);
         }
     }
 
