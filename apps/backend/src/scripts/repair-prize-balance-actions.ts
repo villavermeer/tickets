@@ -27,6 +27,7 @@ type RepairStats = {
     created: number;
     amountAdjusted: number;
     duplicatesRemoved: number;
+    orphansRemoved: number;
 };
 
 function parseArgs() {
@@ -204,7 +205,8 @@ async function repairExpectations(date: Date, expectations: PrizeExpectation[], 
         normalized: 0,
         created: 0,
         amountAdjusted: 0,
-        duplicatesRemoved: 0
+        duplicatesRemoved: 0,
+        orphansRemoved: 0
     };
 
     const processedActionIds = new Set<number>();
@@ -340,13 +342,101 @@ async function repairExpectations(date: Date, expectations: PrizeExpectation[], 
         }
     }
 
+    // Find and remove orphaned prize actions (prizes that don't match any expected prize)
+    const orphanStats = await removeOrphanedPrizes(date, expectations, processedActionIds, dryRun);
+    stats.orphansRemoved = orphanStats;
+
     console.log(`Processed ${expectations.length} expected prizes for ${date.toISOString().split('T')[0]}`);
     console.log(`  Normalized references: ${stats.normalized}`);
     console.log(`  Amount adjustments: ${stats.amountAdjusted}`);
     console.log(`  Created actions: ${stats.created}`);
     console.log(`  Removed duplicates: ${stats.duplicatesRemoved}`);
+    console.log(`  Orphans removed: ${stats.orphansRemoved}`);
 
     return stats;
+}
+
+/**
+ * Find and remove prize balance actions that don't match any expected prize.
+ * This handles cases where prizes were incorrectly created due to bugs or data entry errors.
+ */
+async function removeOrphanedPrizes(
+    date: Date,
+    expectations: PrizeExpectation[],
+    processedActionIds: Set<number>,
+    dryRun: boolean
+): Promise<number> {
+    const amsterdamDate = DateTime.fromJSDate(date).setZone('Europe/Amsterdam');
+    const startOfDay = amsterdamDate.startOf('day').toUTC().toJSDate();
+    const endOfDay = amsterdamDate.endOf('day').toUTC().toJSDate();
+
+    // Get all raffle IDs for this date
+    const raffles = await prisma.raffle.findMany({
+        where: {
+            created: { gte: startOfDay, lte: endOfDay }
+        },
+        select: { id: true }
+    });
+
+    const raffleIds = raffles.map(r => r.id);
+    if (raffleIds.length === 0) return 0;
+
+    // Build expected reference set for quick lookup
+    const expectedReferences = new Set(expectations.map(e => e.reference));
+
+    // Find all prize actions for these raffles that weren't already processed
+    const potentialOrphans = await prisma.balanceAction.findMany({
+        where: {
+            type: BalanceActionType.PRIZE,
+            id: { notIn: Array.from(processedActionIds) },
+            reference: {
+                startsWith: 'PRIZE:'
+            }
+        }
+    });
+
+    let orphansRemoved = 0;
+
+    for (const action of potentialOrphans) {
+        // Parse reference: PRIZE:raffleID:ticketID:code
+        const refParts = action.reference?.split(':');
+        if (!refParts || refParts.length !== 4 || refParts[0] !== 'PRIZE') continue;
+
+        const actionRaffleId = parseInt(refParts[1], 10);
+
+        // Only check prizes for raffles on this date
+        if (!raffleIds.includes(actionRaffleId)) continue;
+
+        // If this reference is not in expected set, it's an orphan
+        if (!expectedReferences.has(action.reference!)) {
+            const prizeAmount = -action.amount; // Convert from negative to positive
+
+            if (dryRun) {
+                console.log(`[DRY-RUN] Would remove orphaned prize action ${action.id} (${action.reference}) - ${prizeAmount / 100} EUR`);
+            } else {
+                console.log(`Removing orphaned prize action ${action.id} (${action.reference}) - ${prizeAmount / 100} EUR`);
+                
+                await prisma.$transaction(async (tx) => {
+                    await tx.balanceAction.delete({
+                        where: { id: action.id }
+                    });
+
+                    // Adjust balance: remove the incorrectly credited amount
+                    // Prize amount is stored as negative (credit to user), so we add it back (decrement by prizeAmount)
+                    await tx.balance.update({
+                        where: { id: action.balanceID },
+                        data: {
+                            balance: { decrement: prizeAmount }
+                        }
+                    });
+                });
+            }
+
+            orphansRemoved++;
+        }
+    }
+
+    return orphansRemoved;
 }
 
 async function main() {
@@ -360,7 +450,7 @@ async function main() {
     }
 
     let cursor = startDate;
-    const aggregate: RepairStats = { normalized: 0, created: 0, amountAdjusted: 0, duplicatesRemoved: 0 };
+    const aggregate: RepairStats = { normalized: 0, created: 0, amountAdjusted: 0, duplicatesRemoved: 0, orphansRemoved: 0 };
 
     while (cursor <= endDate) {
         const expectations = await buildExpectations(cursor.toJSDate());
@@ -375,6 +465,7 @@ async function main() {
         aggregate.created += stats.created;
         aggregate.amountAdjusted += stats.amountAdjusted;
         aggregate.duplicatesRemoved += stats.duplicatesRemoved;
+        aggregate.orphansRemoved += stats.orphansRemoved;
 
         cursor = cursor.plus({ days: 1 });
     }
@@ -384,6 +475,7 @@ async function main() {
     console.log(`Amount adjustments: ${aggregate.amountAdjusted}`);
     console.log(`New prize actions: ${aggregate.created}`);
     console.log(`Duplicates removed: ${aggregate.duplicatesRemoved}`);
+    console.log(`Orphans removed: ${aggregate.orphansRemoved}`);
     console.log(dryRun ? 'Completed in dry-run mode.' : 'Repairs applied.');
 }
 

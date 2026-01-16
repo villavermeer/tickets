@@ -91,6 +91,9 @@ export class RaffleService extends Service implements IRaffleService {
         // After all raffles are saved, create provision and prize balance actions for the raffle date
         await this.createProvisionBalanceActions(raffleDate);
         await this.createPrizeBalanceActions(raffleDate);
+        
+        // Clean up any orphaned prize balance actions (prizes for codes that no longer match winning codes)
+        await this.cleanupOrphanedPrizes(raffleDate);
     }
 
     public async all() {
@@ -740,6 +743,136 @@ export class RaffleService extends Service implements IRaffleService {
         }
 
         console.debug('Completed creating prize balance actions');
+    }
+
+    /**
+     * Clean up orphaned prize balance actions.
+     * These are prizes that were created based on old winning codes that have since been changed.
+     * When raffle codes are corrected, old prizes may no longer be valid.
+     */
+    private async cleanupOrphanedPrizes(date: Date): Promise<void> {
+        console.debug(`Cleaning up orphaned prizes for date: ${date.toISOString()}`);
+
+        const amsterdamDate = DateTime.fromJSDate(date).setZone('Europe/Amsterdam');
+        const startOfDay = amsterdamDate.startOf('day').toUTC().toJSDate();
+        const endOfDay = amsterdamDate.endOf('day').toUTC().toJSDate();
+
+        // Get all raffles for this date
+        const raffles = await this.db.raffle.findMany({
+            where: {
+                created: { gte: startOfDay, lte: endOfDay }
+            },
+            include: {
+                codes: true
+            }
+        });
+
+        if (raffles.length === 0) {
+            console.debug('No raffles found for this date');
+            return;
+        }
+
+        const raffleIds = raffles.map(r => r.id);
+
+        // Build winning codes by game (same logic as createPrizeBalanceActions)
+        const winningCodesByGame = new Map<number, {
+            winningCodes: Array<{ code: string; order: number }>;
+            raffleIDs: number[];
+        }>();
+
+        for (const raffle of raffles) {
+            if (!winningCodesByGame.has(raffle.gameID)) {
+                winningCodesByGame.set(raffle.gameID, {
+                    winningCodes: [],
+                    raffleIDs: []
+                });
+            }
+
+            const gameData = winningCodesByGame.get(raffle.gameID)!;
+            if (!gameData.raffleIDs.includes(raffle.id)) {
+                gameData.raffleIDs.push(raffle.id);
+            }
+
+            const codeToOrder = new Map<string, number>();
+            for (const code of raffle.codes) {
+                if (!codeToOrder.has(code.code)) {
+                    codeToOrder.set(code.code, codeToOrder.size + 1);
+                }
+                if (!gameData.winningCodes.some(wc => wc.code === code.code)) {
+                    gameData.winningCodes.push({
+                        code: code.code,
+                        order: codeToOrder.get(code.code)!
+                    });
+                }
+            }
+        }
+
+        // Find all prize balance actions for these raffles
+        const prizeActions = await this.db.balanceAction.findMany({
+            where: {
+                type: BalanceActionType.PRIZE,
+                reference: {
+                    startsWith: 'PRIZE:'
+                }
+            }
+        });
+
+        let orphansDeleted = 0;
+
+        for (const action of prizeActions) {
+            // Parse reference: PRIZE:raffleID:ticketID:code
+            const refParts = action.reference?.split(':');
+            if (!refParts || refParts.length !== 4 || refParts[0] !== 'PRIZE') continue;
+
+            const actionRaffleId = parseInt(refParts[1], 10);
+            const actionTicketId = parseInt(refParts[2], 10);
+            const actionCode = refParts[3];
+
+            // Only check prizes for raffles in this date range
+            if (!raffleIds.includes(actionRaffleId)) continue;
+
+            // Find the game for this raffle
+            const raffle = raffles.find(r => r.id === actionRaffleId);
+            if (!raffle) continue;
+
+            const gameData = winningCodesByGame.get(raffle.gameID);
+            if (!gameData) continue;
+
+            // Check if this code matches any current winning code using suffix matching
+            const matchesWinningCode = gameData.winningCodes.some(wc => 
+                wc.code.endsWith(actionCode)
+            );
+
+            if (!matchesWinningCode) {
+                // This prize is orphaned - the code no longer matches any winning code
+                console.debug(`Deleting orphaned prize action ${action.id} (${action.reference}) - code "${actionCode}" no longer matches any winning code`);
+
+                const prizeAmount = -action.amount; // Convert from negative (credit) to positive
+
+                await this.db.$transaction(async (tx) => {
+                    // Delete the orphaned prize
+                    await tx.balanceAction.delete({
+                        where: { id: action.id }
+                    });
+
+                    // Adjust the balance (remove the incorrectly credited prize)
+                    await tx.balance.update({
+                        where: { id: action.balanceID },
+                        data: {
+                            balance: { decrement: prizeAmount }
+                        }
+                    });
+                });
+
+                orphansDeleted++;
+            }
+        }
+
+        if (orphansDeleted > 0) {
+            console.debug(`Deleted ${orphansDeleted} orphaned prize balance actions`);
+        } else {
+            console.debug('No orphaned prizes found');
+        }
     }
 
     /**
