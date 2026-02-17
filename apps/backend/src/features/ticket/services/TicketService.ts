@@ -2319,6 +2319,14 @@ export class TicketService extends Service implements ITicketService {
             return now.set({ hour: 18, minute: 0, second: 0, millisecond: 0 });
         }
 
+        // One-off: WNK closes at 21:00 on 17 Feb 2026
+        const isWNKEarlyClose =
+            gameName === "WNK" &&
+            now.hasSame(DateTime.fromISO("2026-02-17", { zone: "Europe/Amsterdam" }), "day");
+        if (isWNKEarlyClose) {
+            return now.set({ hour: 21, minute: 0, second: 0, millisecond: 0 });
+        }
+
         // 24 : 00 (00 : 00 next day) Mon-Sat for those games
         return now.plus({ days: 1 }).startOf("day"); // next-day midnight
     }
