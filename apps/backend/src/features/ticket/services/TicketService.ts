@@ -730,6 +730,7 @@ export class TicketService extends Service implements ITicketService {
     private getGameAbbreviation = (gameName: string): string => {
         const gameMap: Record<string, string> = {
             'WNK': 'WNK',
+            'WNK napa': 'WNK napa',
             'Diario': 'D',
             'Flamingo': 'F',
             'Santo': 'S',
@@ -1839,8 +1840,11 @@ export class TicketService extends Service implements ITicketService {
     private calculateDailyCodeTotals = async (dayStart: Date, dayEnd: Date): Promise<Map<string, Map<number, number>>> => {
         const dailyTotals = new Map<string, Map<number, number>>(); // Map<code, Map<gameID, total>>
 
-        // Query daily codes for WNK (gameID 1) and Super4 (gameID 7)
-        const targetGameIds = [1, 7];
+        const targetGames = await this.db.game.findMany({
+            where: { name: { in: ['WNK', 'WNK napa', 'Super 4'] } },
+            select: { id: true, name: true }
+        });
+        const targetGameIds = targetGames.map(g => g.id);
 
         for (const gameID of targetGameIds) {
             const dailyCodes = await this.db.code.findMany({
@@ -1872,9 +1876,12 @@ export class TicketService extends Service implements ITicketService {
     private getDailyCodesForDisplay = async (dayStart: Date, dayEnd: Date): Promise<{ code: string, value: number, gameID: number, gameName: string }[]> => {
         const dailyCodes: { code: string, value: number, gameID: number, gameName: string }[] = [];
 
-        // Query daily codes for WNK (gameID 1) and Super4 (gameID 7)
-        const targetGameIds = [1, 7];
-        const gameNames = { 1: 'WNK', 7: 'Super 4' };
+        const targetGames = await this.db.game.findMany({
+            where: { name: { in: ['WNK', 'WNK napa', 'Super 4'] } },
+            select: { id: true, name: true }
+        });
+        const targetGameIds = targetGames.map(g => g.id);
+        const gameNames = Object.fromEntries(targetGames.map(g => [g.id, g.name])) as Record<number, string>;
 
         for (const gameID of targetGameIds) {
             const codes = await this.db.code.findMany({
@@ -1902,7 +1909,7 @@ export class TicketService extends Service implements ITicketService {
                     code,
                     value,
                     gameID,
-                    gameName: gameNames[gameID as keyof typeof gameNames]
+                    gameName: gameNames[gameID] ?? `Game ${gameID}`
                 });
             }
         }
