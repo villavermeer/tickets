@@ -2311,31 +2311,41 @@ export class TicketService extends Service implements ITicketService {
     }
 
     private getCutOffForGame(gameName: string, now: DateTime): DateTime {
-        const weekday = now.weekday;           // 1 = Mon … 7 = Sun
-        const isSunday = weekday === 7;
+        const isSummerTime = now.isInDST;
+        const isSunday = now.weekday === 7;
         const isNoonGame =
             gameName === "Philipsburg noon" || gameName === "Smart noon";
 
-        // 16 : 00 every day for "noon" games
-        if (isNoonGame) {
-            return now.set({ hour: 16, minute: 0, second: 0, millisecond: 0 });
-        }
-
-        // 18 : 00 on Sunday for the "evening / regular" games
-        if (isSunday) {
-            return now.set({ hour: 18, minute: 0, second: 0, millisecond: 0 });
-        }
-
-        // One-off: WNK closes at 21:00 on 17 Feb 2026
         const isWNKEarlyClose =
-            gameName === "WNK" &&
+            (gameName === "WNK" || gameName === "WNK napa") &&
             now.hasSame(DateTime.fromISO("2026-02-17", { zone: "Europe/Amsterdam" }), "day");
         if (isWNKEarlyClose) {
             return now.set({ hour: 21, minute: 0, second: 0, millisecond: 0 });
         }
 
-        // 24 : 00 (00 : 00 next day) Mon-Sat for those games
-        return now.plus({ days: 1 }).startOf("day"); // next-day midnight
+        if (isNoonGame) {
+            return now.set({
+                hour: isSummerTime ? 17 : 16,
+                minute: 0,
+                second: 0,
+                millisecond: 0,
+            });
+        }
+
+        if (isSunday) {
+            return now.set({
+                hour: isSummerTime ? 19 : 18,
+                minute: 0,
+                second: 0,
+                millisecond: 0,
+            });
+        }
+
+        if (isSummerTime) {
+            return now.plus({ days: 1 }).startOf("day");
+        }
+
+        return now.set({ hour: 23, minute: 0, second: 0, millisecond: 0 });
     }
 
     private async checkDailyLimits(codes: any[], games: number[], runnerID: number, nowNL: DateTime): Promise<void> {
