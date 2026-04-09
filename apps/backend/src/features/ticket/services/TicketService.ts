@@ -2593,11 +2593,16 @@ export class TicketService extends Service implements ITicketService {
         const amountDifference = newAmount - existingAction.amount;
 
         if (amountDifference !== 0) {
-            // Update balance action and adjust balance
+            // Ledger is append-only: store delta as a new action, never mutate historical rows.
             await this.db.$transaction(async (tx) => {
-                await tx.balanceAction.update({
-                    where: { id: existingAction.id },
-                    data: { amount: newAmount }
+                await tx.balanceAction.create({
+                    data: {
+                        balanceID: balance.id,
+                        type: BalanceActionType.TICKET_SALE,
+                        amount: amountDifference,
+                        reference: `TICKET_SALE_ADJUST:${ticketID}:${Date.now()}`,
+                        created: ticket.created
+                    }
                 });
 
                 await tx.balance.update({
@@ -2628,10 +2633,16 @@ export class TicketService extends Service implements ITicketService {
 
         if (!balanceAction) return;
 
-        // Delete balance action and adjust balance
+        // Append reversal action instead of deleting historical ledger rows.
         await this.db.$transaction(async (tx) => {
-            await tx.balanceAction.delete({
-                where: { id: balanceAction.id }
+            await tx.balanceAction.create({
+                data: {
+                    balanceID: balanceAction.balanceID,
+                    type: BalanceActionType.CORRECTION,
+                    amount: -balanceAction.amount,
+                    reference: `REVERSAL_TICKET_SALE:${balanceAction.id}:${Date.now()}`,
+                    created: balanceAction.created
+                }
             });
 
             await tx.balance.update({

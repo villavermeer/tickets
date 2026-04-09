@@ -88,8 +88,8 @@ export class RaffleService extends Service implements IRaffleService {
             });
         }
 
-        // After all raffles are saved, create provision and prize balance actions for the raffle date
-        await this.createProvisionBalanceActions(raffleDate);
+        // After all raffles are saved, create prize balance actions for the raffle date.
+        // Provision actions are handled at ticket write time and adjusted through delta entries.
         await this.createPrizeBalanceActions(raffleDate);
         
         // Clean up any orphaned prize balance actions (prizes for codes that no longer match winning codes)
@@ -296,8 +296,9 @@ export class RaffleService extends Service implements IRaffleService {
         // Calculate provision (in cents)
         const provisionAmount = Math.round((totalTicketSales * user.commission) / 100);
 
-        // Check if provision action already exists for this user and date
-        const existingProvision = await this.db.balanceAction.findFirst({
+        // Sum all provision actions for this user/day; if desired total differs,
+        // write only the delta as a new append-only entry.
+        const provisionAgg = await this.db.balanceAction.aggregate({
             where: {
                 balance: {
                     userID: user.id
@@ -307,33 +308,15 @@ export class RaffleService extends Service implements IRaffleService {
                     gte: startOfDay,
                     lte: endOfDay
                 }
-            }
+            },
+            _sum: { amount: true }
         });
+        const existingProvisionTotal = provisionAgg._sum.amount ?? 0;
+        const desiredProvisionTotal = -provisionAmount;
+        const provisionDelta = desiredProvisionTotal - existingProvisionTotal;
 
-        if (existingProvision) {
-            // Check if amount is different (existingProvision.amount is negative)
-            // If provisionAmount is 100, existing should be -100.
-            if (existingProvision.amount !== -provisionAmount) {
-                console.debug(`Updating provision for user ${user.id}: was ${existingProvision.amount}, now ${-provisionAmount}`);
-
-                // Calculate difference to adjust balance
-                // If old was -100 (balance -100), new is -300. Diff is -200.
-                // balance.decrement(200).
-                const diff = (-provisionAmount) - existingProvision.amount;
-
-                await this.db.balanceAction.update({
-                    where: { id: existingProvision.id },
-                    data: { amount: -provisionAmount }
-                });
-
-                await this.db.balance.update({
-                    where: { id: existingProvision.balanceID },
-                    data: { balance: { increment: diff } }
-                });
-            }
-        } else if (provisionAmount > 0) {
-            // Create new if amount > 0
-            console.debug(`Creating new provision for user ${user.id}: ${provisionAmount}`);
+        if (provisionDelta !== 0) {
+            console.debug(`Appending provision adjustment for user ${user.id}: delta ${provisionDelta}`);
 
             // Get or create balance for the user
             let balanceID = user.balance?.id;
@@ -351,7 +334,7 @@ export class RaffleService extends Service implements IRaffleService {
                 data: {
                     balanceID: balanceID,
                     type: BalanceActionType.PROVISION,
-                    amount: -provisionAmount,
+                    amount: provisionDelta,
                     reference: `Provisie ${amsterdamDate.toFormat('dd-MM-yyyy')}`,
                     created: endOfDay
                 }
@@ -360,7 +343,7 @@ export class RaffleService extends Service implements IRaffleService {
             await this.db.balance.update({
                 where: { id: balanceID },
                 data: {
-                    balance: { decrement: provisionAmount }
+                    balance: { increment: provisionDelta }
                 }
             });
         }
@@ -448,8 +431,8 @@ export class RaffleService extends Service implements IRaffleService {
             }
         }
 
-        // Check if existing provision
-        const existingManagerProvision = await this.db.balanceAction.findFirst({
+        // Sum all manager provision actions for this day and append only a delta.
+        const managerProvisionAgg = await this.db.balanceAction.aggregate({
             where: {
                 balance: { userID: manager.id },
                 type: BalanceActionType.PROVISION,
@@ -460,27 +443,15 @@ export class RaffleService extends Service implements IRaffleService {
                     gte: startOfDay,
                     lte: endOfDay
                 }
-            }
+            },
+            _sum: { amount: true }
         });
+        const existingManagerProvisionTotal = managerProvisionAgg._sum.amount ?? 0;
+        const desiredManagerProvisionTotal = -totalManagerProvisionFromRunners;
+        const managerProvisionDelta = desiredManagerProvisionTotal - existingManagerProvisionTotal;
 
-        if (existingManagerProvision) {
-            if (existingManagerProvision.amount !== -totalManagerProvisionFromRunners) {
-                console.debug(`Updating manager provision for ${manager.id}: was ${existingManagerProvision.amount}, now ${-totalManagerProvisionFromRunners}`);
-
-                const diff = (-totalManagerProvisionFromRunners) - existingManagerProvision.amount;
-
-                await this.db.balanceAction.update({
-                    where: { id: existingManagerProvision.id },
-                    data: { amount: -totalManagerProvisionFromRunners }
-                });
-
-                await this.db.balance.update({
-                    where: { id: existingManagerProvision.balanceID },
-                    data: { balance: { increment: diff } }
-                });
-            }
-        } else if (totalManagerProvisionFromRunners > 0) {
-            console.debug(`Creating new manager provision for ${manager.id}: ${totalManagerProvisionFromRunners}`);
+        if (managerProvisionDelta !== 0) {
+            console.debug(`Appending manager provision adjustment for ${manager.id}: delta ${managerProvisionDelta}`);
 
             let balanceID = manager.balance?.id;
             if (!balanceID) {
@@ -497,7 +468,7 @@ export class RaffleService extends Service implements IRaffleService {
                 data: {
                     balanceID: balanceID,
                     type: BalanceActionType.PROVISION,
-                    amount: -totalManagerProvisionFromRunners,
+                    amount: managerProvisionDelta,
                     reference: `Provisie lopers ${amsterdamDate.toFormat('dd-MM-yyyy')}`,
                     created: endOfDay
                 }
@@ -506,7 +477,7 @@ export class RaffleService extends Service implements IRaffleService {
             await this.db.balance.update({
                 where: { id: balanceID },
                 data: {
-                    balance: { decrement: totalManagerProvisionFromRunners }
+                    balance: { increment: managerProvisionDelta }
                 }
             });
         }
@@ -850,9 +821,15 @@ export class RaffleService extends Service implements IRaffleService {
                 const prizeAmount = -action.amount; // Convert from negative (credit) to positive
 
                 await this.db.$transaction(async (tx) => {
-                    // Delete the orphaned prize
-                    await tx.balanceAction.delete({
-                        where: { id: action.id }
+                    // Append reversal action instead of deleting historical rows.
+                    await tx.balanceAction.create({
+                        data: {
+                            balanceID: action.balanceID,
+                            type: BalanceActionType.CORRECTION,
+                            amount: action.amount,
+                            reference: `REVERSAL_PRIZE:${action.id}:${Date.now()}`,
+                            created: action.created
+                        }
                     });
 
                     // Adjust the balance (remove the incorrectly credited prize)

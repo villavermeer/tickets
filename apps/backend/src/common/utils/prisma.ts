@@ -172,53 +172,22 @@ basePrisma.$use(async (params: Prisma.MiddlewareParams, next: (params: Prisma.Mi
                             const dateStr = ticketDate.toFormat('dd-MM-yyyy');
                             const provisionReference = `Provisie ${dateStr}`;
 
-                            // Find existing provision action for this user on this date
-                            const existingProvision = await next({
+                            // Append-only ledger: record provision per ticket, do not mutate existing rows.
+                            await next({
                                 model: 'BalanceAction',
-                                action: 'findFirst',
+                                action: 'create',
                                 dataPath: [],
                                 runInTransaction,
                                 args: {
-                                    where: {
+                                    data: {
                                         balanceID: balance.id,
                                         type: BalanceActionType.PROVISION,
-                                        reference: provisionReference,
+                                        amount: -provisionAmount,
+                                        reference: `${provisionReference}:TICKET_SALE:${ticketID}`,
+                                        created: ticket.created,
                                     },
-                                    select: { id: true, amount: true },
                                 },
-                            }) as { id: number; amount: number } | null;
-
-                            if (existingProvision) {
-                                // Update existing provision: add to current amount
-                                const newAmount = existingProvision.amount - provisionAmount;
-                                await next({
-                                    model: 'BalanceAction',
-                                    action: 'update',
-                                    dataPath: [],
-                                    runInTransaction,
-                                    args: {
-                                        where: { id: existingProvision.id },
-                                        data: { amount: newAmount },
-                                    },
-                                });
-                            } else {
-                                // Create new provision action
-                                await next({
-                                    model: 'BalanceAction',
-                                    action: 'create',
-                                    dataPath: [],
-                                    runInTransaction,
-                                    args: {
-                                        data: {
-                                            balanceID: balance.id,
-                                            type: BalanceActionType.PROVISION,
-                                            amount: -provisionAmount,
-                                            reference: provisionReference,
-                                            created: ticket.created,
-                                        },
-                                    },
-                                });
-                            }
+                            });
 
                             // Update balance
                             await next({
@@ -304,53 +273,22 @@ basePrisma.$use(async (params: Prisma.MiddlewareParams, next: (params: Prisma.Mi
                                     const dateStr = ticketDate.toFormat('dd-MM-yyyy');
                                     const managerProvisionReference = `Provisie lopers ${dateStr}`;
 
-                                    // Find existing provision action for this manager on this date
-                                    const existingManagerProvision = await next({
+                                    // Append-only ledger: record manager provision per ticket.
+                                    await next({
                                         model: 'BalanceAction',
-                                        action: 'findFirst',
+                                        action: 'create',
                                         dataPath: [],
                                         runInTransaction,
                                         args: {
-                                            where: {
+                                            data: {
                                                 balanceID: managerBalance.id,
                                                 type: BalanceActionType.PROVISION,
-                                                reference: managerProvisionReference,
+                                                amount: -managerProvisionAmount,
+                                                reference: `${managerProvisionReference}:TICKET_SALE:${ticketID}`,
+                                                created: ticket.created,
                                             },
-                                            select: { id: true, amount: true },
                                         },
-                                    }) as { id: number; amount: number } | null;
-
-                                    if (existingManagerProvision) {
-                                        // Update existing provision: add to current amount
-                                        const newAmount = existingManagerProvision.amount - managerProvisionAmount;
-                                        await next({
-                                            model: 'BalanceAction',
-                                            action: 'update',
-                                            dataPath: [],
-                                            runInTransaction,
-                                            args: {
-                                                where: { id: existingManagerProvision.id },
-                                                data: { amount: newAmount },
-                                            },
-                                        });
-                                    } else {
-                                        // Create new provision action
-                                        await next({
-                                            model: 'BalanceAction',
-                                            action: 'create',
-                                            dataPath: [],
-                                            runInTransaction,
-                                            args: {
-                                                data: {
-                                                    balanceID: managerBalance.id,
-                                                    type: BalanceActionType.PROVISION,
-                                                    amount: -managerProvisionAmount,
-                                                    reference: managerProvisionReference,
-                                                    created: ticket.created,
-                                                },
-                                            },
-                                        });
-                                    }
+                                    });
 
                                     // Update manager balance
                                     await next({

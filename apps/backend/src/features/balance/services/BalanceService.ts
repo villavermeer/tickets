@@ -224,29 +224,45 @@ export class BalanceService extends Service implements IBalanceService {
             }
         }
 
-        // Calculate the difference in amount to adjust the balance
-        const amountDifference = (updates.amount || existingAction.amount) - existingAction.amount;
+        // Ledger entries are append-only. We do not mutate an existing action row.
+        if (updates.type && updates.type !== existingAction.type) {
+            throw new ValidationError("Changing action type is not allowed. Create a new action instead.");
+        }
 
-        // Update the action
-        const updatedAction = await this.db.balanceAction.update({
-            where: { id: actionID },
+        if (updates.created && new Date(updates.created).getTime() !== existingAction.created.getTime()) {
+            throw new ValidationError("Changing action date is not allowed. Create a new action instead.");
+        }
+
+        if (updates.reference !== undefined && updates.reference !== existingAction.reference) {
+            throw new ValidationError("Changing action reference is not allowed. Create a new action instead.");
+        }
+
+        const nextAmount = updates.amount ?? existingAction.amount;
+        const amountDifference = nextAmount - existingAction.amount;
+
+        // If amount is unchanged, return original action as-is.
+        if (amountDifference === 0) {
+            return this.formatBalanceAction(existingAction);
+        }
+
+        // Record only the delta as a new correction action.
+        const adjustmentReference = `ADJUST_ACTION:${existingAction.id}:${Date.now()}`;
+        const adjustmentAction = await this.db.balanceAction.create({
             data: {
-                type: updates.type || existingAction.type,
-                amount: updates.amount || existingAction.amount,
-                reference: updates.reference !== undefined ? updates.reference : existingAction.reference,
-                created: updates.created ? new Date(updates.created) : existingAction.created,
+                balanceID: existingAction.balanceID,
+                type: BalanceActionType.CORRECTION,
+                amount: amountDifference,
+                reference: adjustmentReference,
+                created: existingAction.created
             }
         });
 
-        // Update the balance to reflect the amount difference
-        if (amountDifference !== 0) {
-            await this.db.balance.update({
-                where: { id: existingAction.balanceID },
-                data: { balance: { increment: amountDifference } }
-            });
-        }
+        await this.db.balance.update({
+            where: { id: existingAction.balanceID },
+            data: { balance: { increment: amountDifference } }
+        });
 
-        return this.formatBalanceAction(updatedAction);
+        return this.formatBalanceAction(adjustmentAction);
     }
 
     public async deleteBalanceAction(actionID: number): Promise<void> {
@@ -274,15 +290,23 @@ export class BalanceService extends Service implements IBalanceService {
             }
         }
 
-        // Reverse the balance effect by subtracting the amount
-        await this.db.balance.update({
-            where: { id: existingAction.balanceID },
-            data: { balance: { decrement: existingAction.amount } }
-        });
+        // Append a reversal action instead of deleting historical data.
+        const reversalAmount = -existingAction.amount;
+        await this.db.$transaction(async (tx) => {
+            await tx.balanceAction.create({
+                data: {
+                    balanceID: existingAction.balanceID,
+                    type: BalanceActionType.CORRECTION,
+                    amount: reversalAmount,
+                    reference: `REVERSAL:${existingAction.id}:${Date.now()}`,
+                    created: existingAction.created
+                }
+            });
 
-        // Delete the action
-        await this.db.balanceAction.delete({
-            where: { id: actionID }
+            await tx.balance.update({
+                where: { id: existingAction.balanceID },
+                data: { balance: { increment: reversalAmount } }
+            });
         });
     }
 
