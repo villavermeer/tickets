@@ -9,6 +9,8 @@ import { Context } from "../../../common/utils/context";
 import bcrypt from "bcrypt";
 import { Role } from "@prisma/client";
 import ValidationError from "../../../common/classes/errors/ValidationError";
+import { RaffleService } from "../../raffle/services/RaffleService";
+import { DateTime } from "luxon";
 
 export interface IUserService {
     find(id: number): Promise<UserInterface>;
@@ -17,13 +19,98 @@ export interface IUserService {
     delete(id: number): Promise<void>;
 }
 
+type RequestUser = { id: number; role: Role };
+
 @singleton()
 export class UserService extends Service implements IUserService {
 
     constructor(
         @inject("Database") protected db: ExtendedPrismaClient,
+        @inject("RaffleService") protected raffleService: RaffleService,
     ) {
         super()
+    }
+
+    private async distinctRunnerTicketDays(runnerId: number): Promise<Date[]> {
+        const tickets = await this.db.ticket.findMany({
+            where: { creatorID: runnerId },
+            select: { created: true },
+        });
+        const keys = new Set<string>();
+        const dates: Date[] = [];
+        for (const t of tickets) {
+            const key = DateTime.fromJSDate(t.created).setZone("Europe/Amsterdam").toISODate();
+            if (!key || keys.has(key)) {
+                continue;
+            }
+            keys.add(key);
+            dates.push(DateTime.fromISO(key, { zone: "Europe/Amsterdam" }).startOf("day").toJSDate());
+        }
+        return dates;
+    }
+
+    private async reconcileManagerProvisionForManagers(managerIds: number[], runnerId: number): Promise<void> {
+        if (managerIds.length === 0) {
+            return;
+        }
+        const days = await this.distinctRunnerTicketDays(runnerId);
+        for (const managerId of managerIds) {
+            for (const d of days) {
+                await this.raffleService.updateManagerProvision(managerId, d);
+            }
+        }
+    }
+
+    private async syncRunnerManagerRelation(
+        runnerId: number,
+        managerID: number | null | undefined,
+        requestUser: RequestUser
+    ): Promise<void> {
+        if (managerID === undefined) {
+            return;
+        }
+
+        if (requestUser.role === Role.RUNNER) {
+            throw new ValidationError("Je kunt de manager-koppeling niet zelf wijzigen");
+        }
+
+        let effectiveManagerId: number | null = managerID;
+
+        if (requestUser.role === Role.MANAGER) {
+            if (managerID !== null && managerID !== requestUser.id) {
+                throw new ValidationError("Je kunt je lopers alleen aan jezelf als manager koppelen");
+            }
+            if (managerID !== null) {
+                effectiveManagerId = requestUser.id;
+            }
+        }
+
+        if (effectiveManagerId !== null) {
+            const mgr = await this.db.user.findFirst({
+                where: { id: effectiveManagerId, role: Role.MANAGER },
+            });
+            if (!mgr) {
+                throw new ValidationError("Ongeldige manager");
+            }
+        }
+
+        const existing = await this.db.managerRunner.findMany({
+            where: { runnerID: runnerId },
+            select: { managerID: true },
+        });
+        const oldManagerIds = [...new Set(existing.map((e) => e.managerID))];
+
+        await this.db.managerRunner.deleteMany({ where: { runnerID: runnerId } });
+
+        if (effectiveManagerId !== null) {
+            await this.db.managerRunner.create({
+                data: { managerID: effectiveManagerId, runnerID: runnerId },
+            });
+        }
+
+        const newManagerIds = effectiveManagerId !== null ? [effectiveManagerId] : [];
+        const affected = [...new Set([...oldManagerIds, ...newManagerIds])];
+        await this.reconcileManagerProvisionForManagers(affected, runnerId);
     }
 
     public find = async (id: number): Promise<UserInterface> => {
@@ -68,6 +155,8 @@ export class UserService extends Service implements IUserService {
             throw new EntityNotFoundError("User");
         }
 
+        const requestUser = Context.get("user") as RequestUser;
+
         const updatedUser = await this.db.user.update({
             where: { id: data.id },
             data: {
@@ -79,7 +168,22 @@ export class UserService extends Service implements IUserService {
             }
         });
 
-        return UserMapper.format(updatedUser);
+        if (updatedUser.role === Role.RUNNER && "managerID" in data) {
+            await this.syncRunnerManagerRelation(updatedUser.id, data.managerID, requestUser);
+        }
+
+        await this.deleteFromCache(`users:${data.id}`);
+
+        const refreshed = await this.db.user.findFirst({
+            where: { id: data.id },
+            select: UserMapper.getSelectableFields(),
+        });
+
+        if (!refreshed) {
+            throw new EntityNotFoundError("User");
+        }
+
+        return UserMapper.format(refreshed);
     }
 
     public delete = async (id: number): Promise<void> => {

@@ -8,26 +8,55 @@ export type SelectableUserFields = Prisma.UserGetPayload<{
 export class UserMapper {
 
     public static getSelectableFields(): Prisma.UserSelect {
-        return {
+        const core: Prisma.UserSelect = {
             id: true,
             role: true,
             name: true,
-            runners: true,
-            manager: true,
             username: true,
             commission: true,
-        }
+        };
+        return {
+            ...core,
+            runners: {
+                select: {
+                    runner: { select: { ...core } },
+                },
+            },
+            manager: {
+                select: {
+                    manager: { select: { ...core } },
+                },
+            },
+        };
     }
 
     public static format(user: any): UserInterface {
+        const runnersFormatted: UserInterface[] = (() => {
+            if (!user.runners || !Array.isArray(user.runners)) {
+                return [];
+            }
+            return user.runners
+                .map((row: { runner?: any }) => (row.runner ? UserMapper.format(row.runner) : null))
+                .filter(Boolean) as UserInterface[];
+        })();
+
+        const managerFormatted: UserInterface | null = (() => {
+            const m = user.manager;
+            if (!m || !Array.isArray(m) || m.length === 0) {
+                return null;
+            }
+            const row = m[0] as { manager?: any };
+            return row.manager ? UserMapper.format(row.manager) : null;
+        })();
+
         return {
             id: user.id ?? '',
             name: user.name ?? '',
             role: user.role ?? '',
             username: user.username ?? '',
             commission: user.commission ?? 0,
-            runners: user.runners ? UserMapper.formatMany(user.runners) : [],
-            manager: user.manager ? UserMapper.format(user.manager) : null,
+            runners: runnersFormatted,
+            manager: managerFormatted,
         };
     }
 

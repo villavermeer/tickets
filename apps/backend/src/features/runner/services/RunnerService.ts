@@ -1,4 +1,4 @@
-import { Role, User } from "@prisma/client";
+import { Role } from "@prisma/client";
 import Service from "../../../common/services/Service";
 import { UserMapper } from "../../user/mappers/UserMapper";
 import { UserInterface } from "../../user/types";
@@ -6,6 +6,7 @@ import { injectable, container } from "tsyringe";
 import { Context } from "../../../common/utils/context";
 import { IRevenueService, RevenueService } from "../../revenue/services/RevenueService";
 import _ from "lodash";
+import EntityNotFoundError from "../../../common/classes/errors/EntityNotFoundError";
 
 export interface IRunnerService {
     all(): Promise<UserInterface[]>;
@@ -21,8 +22,12 @@ export class RunnerService extends Service implements IRunnerService {
             where: {
                 id: id,
                 role: Role.RUNNER
-            }
+            },
+            select: UserMapper.getSelectableFields(),
         });
+        if (!runner) {
+            throw new EntityNotFoundError("Runner");
+        }
         return UserMapper.format(runner);
     }
 
@@ -67,7 +72,8 @@ export class RunnerService extends Service implements IRunnerService {
                         managerID: id
                     }
                 }   
-            }
+            },
+            select: UserMapper.getSelectableFields(),
         });
         return users.map(user => UserMapper.format(user));
     }

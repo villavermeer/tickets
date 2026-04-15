@@ -19,4 +19,6 @@ export interface ManageUserRequest {
     password: string;
     commission: number;
     role: $Enums.Role;
+    /** Alleen voor lopers: koppel aan manager en herbereken managerprovisie op bestaande tickets. */
+    managerID?: number | null;
 }
