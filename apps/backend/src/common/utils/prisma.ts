@@ -184,7 +184,6 @@ basePrisma.$use(async (params: Prisma.MiddlewareParams, next: (params: Prisma.Mi
                                         type: BalanceActionType.PROVISION,
                                         amount: -provisionAmount,
                                         reference: `${provisionReference}:TICKET_SALE:${ticketID}`,
-                                        created: ticket.created,
                                     },
                                 },
                             });
@@ -285,7 +284,6 @@ basePrisma.$use(async (params: Prisma.MiddlewareParams, next: (params: Prisma.Mi
                                                 type: BalanceActionType.PROVISION,
                                                 amount: -managerProvisionAmount,
                                                 reference: `${managerProvisionReference}:TICKET_SALE:${ticketID}`,
-                                                created: ticket.created,
                                             },
                                         },
                                     });
@@ -454,7 +452,7 @@ basePrisma.$use(async (params: Prisma.MiddlewareParams, next: (params: Prisma.Mi
                         runInTransaction,
                         args: {
                             where: { id: balance.id },
-                            data: { balance: { decrement: prizeAmount } },
+                            data: { balance: { increment: prizeAmount } },
                         },
                     });
                 }

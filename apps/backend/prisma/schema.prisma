@@ -17,10 +17,11 @@ model User {
   created    DateTime        @default(now())
   updated    DateTime        @updatedAt
   commission Float           @default(0.0)
-  balance    Balance?
-  runners    ManagerRunner[] @relation("Manager")
-  manager    ManagerRunner[] @relation("Runner")
-  tickets    Ticket[]
+  balance        Balance?
+  frozenBalances FrozenBalance[]
+  runners        ManagerRunner[] @relation("Manager")
+  manager        ManagerRunner[] @relation("Runner")
+  tickets        Ticket[]
 
   @@index([id])
   @@map("users")
@@ -171,6 +172,21 @@ enum GameExpiry {
   MIDDAY
   MIDNIGHT
   CUSTOM
+}
+
+model FrozenBalance {
+  id      Int      @id @default(autoincrement())
+  userID  Int
+  date    DateTime
+  balance Int
+  created DateTime @default(now())
+  updated DateTime @updatedAt
+  user    User     @relation(fields: [userID], references: [id], onDelete: Cascade)
+
+  @@unique([userID, date])
+  @@index([userID])
+  @@index([date])
+  @@map("frozen_balances")
 }
 
 enum BalanceActionType {

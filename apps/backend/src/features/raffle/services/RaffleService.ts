@@ -94,6 +94,9 @@ export class RaffleService extends Service implements IRaffleService {
         
         // Clean up any orphaned prize balance actions (prizes for codes that no longer match winning codes)
         await this.cleanupOrphanedPrizes(raffleDate);
+
+        // Freeze EOD balances for all users with activity up to this date
+        await this.freezeBalances(raffleDate);
     }
 
     public async all() {
@@ -296,17 +299,19 @@ export class RaffleService extends Service implements IRaffleService {
         // Calculate provision (in cents)
         const provisionAmount = Math.round((totalTicketSales * user.commission) / 100);
 
-        // Sum all provision actions for this user/day; if desired total differs,
-        // write only the delta as a new append-only entry.
+        // Sum all provision actions for this user/day by reference pattern.
+        // We match by reference rather than by created timestamp, because new delta
+        // entries are dated "now" to avoid mutating historical balances.
+        // Use startsWith to avoid matching "Provisie lopers ..." manager provisions.
+        const dateStr = amsterdamDate.toFormat('dd-MM-yyyy');
         const provisionAgg = await this.db.balanceAction.aggregate({
             where: {
                 balance: {
                     userID: user.id
                 },
                 type: BalanceActionType.PROVISION,
-                created: {
-                    gte: startOfDay,
-                    lte: endOfDay
+                reference: {
+                    startsWith: `Provisie ${dateStr}`
                 }
             },
             _sum: { amount: true }
@@ -335,8 +340,7 @@ export class RaffleService extends Service implements IRaffleService {
                     balanceID: balanceID,
                     type: BalanceActionType.PROVISION,
                     amount: provisionDelta,
-                    reference: `Provisie ${amsterdamDate.toFormat('dd-MM-yyyy')}`,
-                    created: endOfDay
+                    reference: `Provisie ${dateStr}`,
                 }
             });
 
@@ -431,18 +435,17 @@ export class RaffleService extends Service implements IRaffleService {
             }
         }
 
-        // Sum all manager provision actions for this day and append only a delta.
+        // Sum all manager provision actions for this day by reference pattern.
+        // We match by reference rather than by created timestamp, because new delta
+        // entries are dated "now" to avoid mutating historical balances.
+        const dateStr = amsterdamDate.toFormat('dd-MM-yyyy');
         const managerProvisionAgg = await this.db.balanceAction.aggregate({
             where: {
                 balance: { userID: manager.id },
                 type: BalanceActionType.PROVISION,
                 reference: {
-                    contains: `Provisie lopers ${amsterdamDate.toFormat('dd-MM-yyyy')}`
+                    contains: `Provisie lopers ${dateStr}`
                 },
-                created: {
-                    gte: startOfDay,
-                    lte: endOfDay
-                }
             },
             _sum: { amount: true }
         });
@@ -469,8 +472,7 @@ export class RaffleService extends Service implements IRaffleService {
                     balanceID: balanceID,
                     type: BalanceActionType.PROVISION,
                     amount: managerProvisionDelta,
-                    reference: `Provisie lopers ${amsterdamDate.toFormat('dd-MM-yyyy')}`,
-                    created: endOfDay
+                    reference: `Provisie lopers ${dateStr}`,
                 }
             });
 
@@ -821,14 +823,12 @@ export class RaffleService extends Service implements IRaffleService {
                 const prizeAmount = -action.amount; // Convert from negative (credit) to positive
 
                 await this.db.$transaction(async (tx) => {
-                    // Append reversal action instead of deleting historical rows.
                     await tx.balanceAction.create({
                         data: {
                             balanceID: action.balanceID,
                             type: BalanceActionType.CORRECTION,
                             amount: action.amount,
                             reference: `REVERSAL_PRIZE:${action.id}:${Date.now()}`,
-                            created: action.created
                         }
                     });
 
@@ -850,6 +850,56 @@ export class RaffleService extends Service implements IRaffleService {
         } else {
             console.debug('No orphaned prizes found');
         }
+    }
+
+    /**
+     * Freeze EOD balances for all users that have balance activity up to this date.
+     * Writes one row per user into frozen_balances so historical opening balances
+     * become an immutable snapshot rather than a live aggregation.
+     */
+    private async freezeBalances(date: Date): Promise<void> {
+        console.debug(`Freezing balances for date: ${date.toISOString()}`);
+
+        const amsterdamDate = DateTime.fromJSDate(date).setZone('Europe/Amsterdam');
+        const startOfDay = amsterdamDate.startOf('day').toUTC().toJSDate();
+        const endOfDay = amsterdamDate.endOf('day').toUTC().toJSDate();
+
+        const userTotals = await this.db.balanceAction.groupBy({
+            by: ['balanceID'],
+            where: {
+                created: { lte: endOfDay }
+            },
+            _sum: { amount: true }
+        });
+
+        if (userTotals.length === 0) {
+            console.debug('No balance actions found, skipping freeze');
+            return;
+        }
+
+        const balanceIDs = userTotals.map(t => t.balanceID);
+        const balances = await this.db.balance.findMany({
+            where: { id: { in: balanceIDs } },
+            select: { id: true, userID: true }
+        });
+        const balanceToUser = new Map(balances.map(b => [b.id, b.userID]));
+
+        let frozen = 0;
+        for (const row of userTotals) {
+            const userID = balanceToUser.get(row.balanceID);
+            if (!userID) continue;
+
+            const eodBalance = row._sum.amount ?? 0;
+
+            await this.db.frozenBalance.upsert({
+                where: { userID_date: { userID, date: startOfDay } },
+                update: { balance: eodBalance },
+                create: { userID, date: startOfDay, balance: eodBalance }
+            });
+            frozen++;
+        }
+
+        console.debug(`Frozen ${frozen} user balances for ${amsterdamDate.toFormat('dd-MM-yyyy')}`);
     }
 
     /**

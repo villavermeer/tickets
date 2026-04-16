@@ -13,6 +13,7 @@ export interface IBalanceService {
     processCorrection(userID: number, amount: number, reference?: string, created?: Date): Promise<BalanceAction>;
     getBalanceActions(userID: number, limit?: number, offset?: number): Promise<BalanceAction[]>;
     getBalanceHistory(userID: number, startDate?: Date, endDate?: Date): Promise<BalanceAction[]>;
+    getFrozenBalance(userID: number, date: Date): Promise<number | null>;
     updateBalanceAction(actionID: number, updates: Partial<CreateBalanceActionRequest>): Promise<BalanceAction>;
     deleteBalanceAction(actionID: number): Promise<void>;
 }
@@ -199,6 +200,13 @@ export class BalanceService extends Service implements IBalanceService {
         return actions.map(action => this.formatBalanceAction(action));
     }
 
+    public async getFrozenBalance(userID: number, date: Date): Promise<number | null> {
+        const frozen = await this.db.frozenBalance.findUnique({
+            where: { userID_date: { userID, date } }
+        });
+        return frozen?.balance ?? null;
+    }
+
     public async updateBalanceAction(actionID: number, updates: Partial<CreateBalanceActionRequest>): Promise<BalanceAction> {
         const requestUser = Context.get("user");
         
@@ -253,7 +261,6 @@ export class BalanceService extends Service implements IBalanceService {
                 type: BalanceActionType.CORRECTION,
                 amount: amountDifference,
                 reference: adjustmentReference,
-                created: existingAction.created
             }
         });
 
@@ -299,7 +306,6 @@ export class BalanceService extends Service implements IBalanceService {
                     type: BalanceActionType.CORRECTION,
                     amount: reversalAmount,
                     reference: `REVERSAL:${existingAction.id}:${Date.now()}`,
-                    created: existingAction.created
                 }
             });
 

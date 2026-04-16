@@ -1274,41 +1274,31 @@ export class TicketService extends Service implements ITicketService {
             });
         });
 
-        // Calculate previous balance for each user (balance before the period)
+        // Calculate previous balance for each user (balance before the period).
+        // Prefer frozen balance snapshot when available; fall back to summing actions.
+        const prevDayAmsterdam = DateTime.fromJSDate(startDate).setZone('Europe/Amsterdam').minus({ days: 1 }).startOf('day').toUTC().toJSDate();
         for (const [userId, row] of byUser) {
-            const actionsBeforePeriod = await this.db.balanceAction.findMany({
-                where: {
-                    created: {
-                        lt: startDate
-                    },
-                    balance: {
-                        userID: userId
+            const frozen = await this.db.frozenBalance.findUnique({
+                where: { userID_date: { userID: userId, date: prevDayAmsterdam } }
+            });
+
+            if (frozen) {
+                row.vorigSaldo = frozen.balance;
+            } else {
+                const actionsBeforePeriod = await this.db.balanceAction.findMany({
+                    where: {
+                        created: { lt: startDate },
+                        balance: { userID: userId }
                     }
-                }
-            });
+                });
 
-            let previousBalance = 0;
-            actionsBeforePeriod.forEach((action) => {
-                switch (action.type) {
-                    case BalanceActionType.TICKET_SALE:
-                        previousBalance += action.amount;
-                        break;
-                    case BalanceActionType.CORRECTION:
-                        previousBalance += action.amount;
-                        break;
-                    case BalanceActionType.PAYOUT:
-                        previousBalance += action.amount; // Already negative
-                        break;
-                    case BalanceActionType.PRIZE:
-                        previousBalance += action.amount; // Already negative
-                        break;
-                    case BalanceActionType.PROVISION:
-                        previousBalance += action.amount;
-                        break;
-                }
-            });
+                let previousBalance = 0;
+                actionsBeforePeriod.forEach((action) => {
+                    previousBalance += action.amount;
+                });
 
-            row.vorigSaldo = previousBalance;
+                row.vorigSaldo = previousBalance;
+            }
         }
 
         // Process actions within the period
@@ -2601,7 +2591,6 @@ export class TicketService extends Service implements ITicketService {
                         type: BalanceActionType.TICKET_SALE,
                         amount: amountDifference,
                         reference: `TICKET_SALE_ADJUST:${ticketID}:${Date.now()}`,
-                        created: ticket.created
                     }
                 });
 
@@ -2641,7 +2630,6 @@ export class TicketService extends Service implements ITicketService {
                     type: BalanceActionType.CORRECTION,
                     amount: -balanceAction.amount,
                     reference: `REVERSAL_TICKET_SALE:${balanceAction.id}:${Date.now()}`,
-                    created: balanceAction.created
                 }
             });
 

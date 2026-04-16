@@ -46,6 +46,13 @@ export class BalanceRouter implements IBalanceRouter {
             balanceController.getBalanceHistory
         );
         
+        // Get frozen EOD balance for a specific date
+        this.router.get(
+            "/:userID/frozen",
+            Authorized,
+            balanceController.getFrozenBalance
+        );
+        
         // Process payout (admins and managers)
         this.router.post(
             "/:userID/payout",

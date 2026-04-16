@@ -12,6 +12,7 @@ export interface IBalanceController {
     getUserBalance(req: Request, res: Response): Promise<void>;
     getBalanceActions(req: Request, res: Response): Promise<void>;
     getBalanceHistory(req: Request, res: Response): Promise<void>;
+    getFrozenBalance(req: Request, res: Response): Promise<void>;
     processPayout(req: Request, res: Response): Promise<void>;
     processCorrection(req: Request, res: Response): Promise<void>;
     addBalanceAction(req: Request, res: Response): Promise<void>;
@@ -101,6 +102,35 @@ export class BalanceController extends Controller implements IBalanceController 
 
             const history = await this.balanceService.getBalanceHistory(userID, startDate, endDate);
             res.status(200).json(formatSuccessResponse('BalanceHistory', history));
+        } catch (error) {
+            this.handleError(error, req, res);
+        }
+    };
+
+    public getFrozenBalance = async (req: Request, res: Response): Promise<void> => {
+        try {
+            const userID = parseInt(req.params.userID);
+            const dateParam = req.query.date as string | undefined;
+
+            if (!dateParam) {
+                throw new ValidationError("date query parameter is required (YYYY-MM-DD)");
+            }
+
+            const requestUser = Context.get("user");
+
+            if (requestUser.role === Role.RUNNER && requestUser.id !== userID) {
+                throw new ValidationError("You can only view your own balance");
+            }
+
+            if (requestUser.role === Role.MANAGER) {
+                const isUnderManager = await this.isUserUnderManager(requestUser.id, userID);
+                if (!isUnderManager) {
+                    throw new ValidationError("You can only view balances of users under your management");
+                }
+            }
+
+            const balance = await this.balanceService.getFrozenBalance(userID, new Date(dateParam));
+            res.status(200).json(formatSuccessResponse('FrozenBalance', { balance }));
         } catch (error) {
             this.handleError(error, req, res);
         }
