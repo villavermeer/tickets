@@ -1,10 +1,22 @@
 import { injectable, inject } from "tsyringe";
+import { DateTime } from "luxon";
 import Service from "../../../common/services/Service";
 import { ExtendedPrismaClient } from "../../../common/utils/prisma";
 import { Context } from "../../../common/utils/context";
-import { Balance, BalanceActionType, Role } from "@prisma/client";
+import { Balance, BalanceActionType, Prisma, Role } from "@prisma/client";
 import ValidationError from "../../../common/classes/errors/ValidationError";
 import EntityNotFoundError from "../../../common/classes/errors/EntityNotFoundError";
+
+export interface BalanceDayTotalsResult {
+    opening: number;
+    ticketSale: number;
+    correction: number;
+    payout: number;
+    prize: number;
+    provision: number;
+    dayNet: number;
+    closing: number;
+}
 
 export interface IBalanceService {
     getUserBalance(userID: number): Promise<BalanceWithActions>;
@@ -14,6 +26,7 @@ export interface IBalanceService {
     getBalanceActions(userID: number, limit?: number, offset?: number): Promise<BalanceAction[]>;
     getBalanceHistory(userID: number, startDate?: Date, endDate?: Date): Promise<BalanceAction[]>;
     getFrozenBalance(userID: number, date: Date): Promise<number | null>;
+    getBalanceDayTotals(userID: number, calendarDateYmd: string): Promise<BalanceDayTotalsResult>;
     updateBalanceAction(actionID: number, updates: Partial<CreateBalanceActionRequest>): Promise<BalanceAction>;
     deleteBalanceAction(actionID: number): Promise<void>;
 }
@@ -205,6 +218,150 @@ export class BalanceService extends Service implements IBalanceService {
             where: { userID_date: { userID, date } }
         });
         return frozen?.balance ?? null;
+    }
+
+    /**
+     * Amsterdam calendar day (YYYY-MM-DD) totals for the mobile balance overview.
+     * Uses [startOfDay, nextDayStart) UTC bounds so ledger rows cannot fall through cracks at day edges.
+     */
+    public async getBalanceDayTotals(userID: number, calendarDateYmd: string): Promise<BalanceDayTotalsResult> {
+        const parsed = DateTime.fromFormat(calendarDateYmd, "yyyy-MM-dd", { zone: "Europe/Amsterdam" });
+        if (!parsed.isValid) {
+            throw new ValidationError("Invalid date; use YYYY-MM-DD");
+        }
+
+        const dayStartUtc = parsed.startOf("day").toUTC().toJSDate();
+        const nextDayStartUtc = parsed.plus({ days: 1 }).startOf("day").toUTC().toJSDate();
+
+        const frozenSnapshotInstant = parsed.minus({ days: 1 }).startOf("day").toUTC().toJSDate();
+
+        let opening: number;
+        const frozen = await this.getFrozenBalance(userID, frozenSnapshotInstant);
+        if (frozen !== null) {
+            opening = frozen;
+        } else {
+            const priorActions = await this.db.balanceAction.findMany({
+                where: {
+                    balance: { userID },
+                    created: { lt: dayStartUtc },
+                },
+            });
+            opening = priorActions.reduce((sum, a) => sum + a.amount, 0);
+        }
+
+        const dayActionsByCreated = await this.db.balanceAction.findMany({
+            where: {
+                balance: { userID },
+                created: {
+                    gte: dayStartUtc,
+                    lt: nextDayStartUtc,
+                },
+            },
+            orderBy: { created: "asc" },
+        });
+
+        /**
+         * Also pick up ledger rows tied to tickets whose *business* day in Amsterdam is this date,
+         * even when `balance_action.created` falls outside that window (relay timing, adjustments, etc.).
+         */
+        let ticketRows: Array<{ id: number }> = [];
+        try {
+            ticketRows = await this.db.$queryRaw<Array<{ id: number }>>(Prisma.sql`
+                SELECT id FROM tickets
+                WHERE "creatorID" = ${userID}
+                AND (timezone('Europe/Amsterdam', created))::date = CAST(${calendarDateYmd} AS DATE)
+            `);
+        } catch {
+            ticketRows = [];
+        }
+
+        let attributedByTicketDay: typeof dayActionsByCreated = [];
+        if (ticketRows.length > 0) {
+            const ticketIds = new Set(ticketRows.map((r) => r.id));
+            attributedByTicketDay = await this.db.balanceAction.findMany({
+                where: {
+                    balance: { userID },
+                    OR: [
+                        ...ticketRows.map((r) => ({ reference: `TICKET_SALE:${r.id}` })),
+                        ...ticketRows.map((r) => ({
+                            reference: { startsWith: `TICKET_SALE_ADJUST:${r.id}:` },
+                        })),
+                        ...ticketRows.map((r) => ({
+                            reference: { endsWith: `:TICKET_SALE:${r.id}` },
+                        })),
+                    ],
+                },
+                orderBy: { created: "asc" },
+            });
+
+            const prizeCandidates = await this.db.balanceAction.findMany({
+                where: {
+                    balance: { userID },
+                    type: BalanceActionType.PRIZE,
+                    reference: { startsWith: "PRIZE:" },
+                },
+                orderBy: { created: "asc" },
+            });
+            for (const a of prizeCandidates) {
+                const parts = (a.reference || "").split(":");
+                if (parts.length < 4) continue;
+                const ticketId = Number(parts[2]);
+                if (Number.isFinite(ticketId) && ticketIds.has(ticketId)) {
+                    attributedByTicketDay.push(a);
+                }
+            }
+        }
+
+        const mergedById = new Map<number, (typeof dayActionsByCreated)[number]>();
+        for (const a of dayActionsByCreated) {
+            mergedById.set(a.id, a);
+        }
+        for (const a of attributedByTicketDay) {
+            mergedById.set(a.id, a);
+        }
+        const dayActions = [...mergedById.values()];
+
+        let ticketSale = 0;
+        let correction = 0;
+        let payout = 0;
+        let prize = 0;
+        let provision = 0;
+
+        for (const a of dayActions) {
+            switch (a.type) {
+                case BalanceActionType.TICKET_SALE:
+                    ticketSale += a.amount;
+                    break;
+                case BalanceActionType.CORRECTION:
+                    correction += a.amount;
+                    break;
+                case BalanceActionType.PAYOUT:
+                    payout += a.amount;
+                    break;
+                case BalanceActionType.PRIZE:
+                    prize += a.amount;
+                    break;
+                case BalanceActionType.PROVISION:
+                    provision += a.amount;
+                    break;
+                default:
+                    break;
+            }
+        }
+
+        const dayNet = ticketSale + correction + payout + prize + provision;
+        const closing = opening + dayNet;
+
+        return {
+            opening,
+            ticketSale,
+            correction,
+            payout,
+            prize,
+            provision,
+            dayNet,
+            closing,
+        };
     }
 
     public async updateBalanceAction(actionID: number, updates: Partial<CreateBalanceActionRequest>): Promise<BalanceAction> {

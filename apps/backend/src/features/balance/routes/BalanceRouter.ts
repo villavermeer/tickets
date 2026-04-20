@@ -52,6 +52,13 @@ export class BalanceRouter implements IBalanceRouter {
             Authorized,
             balanceController.getFrozenBalance
         );
+
+        // Amsterdam calendar day aggregates (saldo overview)
+        this.router.get(
+            "/:userID/day-totals",
+            Authorized,
+            balanceController.getBalanceDayTotals
+        );
         
         // Process payout (admins and managers)
         this.router.post(
