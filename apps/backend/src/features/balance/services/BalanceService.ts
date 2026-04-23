@@ -57,8 +57,16 @@ export interface BalanceAction {
     updated: Date;
 }
 
+interface CachedBalanceDayTotals {
+    value: BalanceDayTotalsResult;
+    expiresAt: number;
+}
+
 @injectable()
 export class BalanceService extends Service implements IBalanceService {
+    private static readonly DAY_TOTALS_CACHE_TTL_MS = 20_000;
+    private static readonly dayTotalsCache = new Map<string, CachedBalanceDayTotals>();
+
     constructor(@inject("Database") protected db: ExtendedPrismaClient) {
         super();
     }
@@ -120,6 +128,7 @@ export class BalanceService extends Service implements IBalanceService {
 
         // Update balance based on action type
         await this.updateBalance(balance.id, action.type, action.amount);
+        this.invalidateUserDayTotalsCache(userID);
 
         return this.formatBalanceAction(balanceAction);
     }
@@ -177,6 +186,7 @@ export class BalanceService extends Service implements IBalanceService {
                 balance: { increment: amount }
             }
         });
+        this.invalidateUserDayTotalsCache(userID);
 
         return this.formatBalanceAction(balanceAction);
     }
@@ -229,6 +239,8 @@ export class BalanceService extends Service implements IBalanceService {
         if (!parsed.isValid) {
             throw new ValidationError("Invalid date; use YYYY-MM-DD");
         }
+        const cached = this.getCachedDayTotals(userID, calendarDateYmd);
+        if (cached) return cached;
 
         const earliestAction = await this.db.balanceAction.findFirst({
             where: { balance: { userID } },
@@ -269,14 +281,20 @@ export class BalanceService extends Service implements IBalanceService {
         earliestCalendarDateYmd: string | null,
         cache: Map<string, BalanceDayTotalsResult>
     ): Promise<BalanceDayTotalsResult> {
-        const cached = cache.get(calendarDateYmd);
-        if (cached) return cached;
+        const inCallCached = cache.get(calendarDateYmd);
+        if (inCallCached) return inCallCached;
+        const sharedCached = this.getCachedDayTotals(userID, calendarDateYmd);
+        if (sharedCached) {
+            cache.set(calendarDateYmd, sharedCached);
+            return sharedCached;
+        }
 
         const current = await this.computeBalanceDayTotalsRaw(userID, parsed, calendarDateYmd);
 
         // Base case: no history, or this is the first ledger day for this user.
         if (!earliestCalendarDateYmd || calendarDateYmd <= earliestCalendarDateYmd) {
             cache.set(calendarDateYmd, current);
+            this.setCachedDayTotals(userID, calendarDateYmd, current);
             return current;
         }
 
@@ -292,6 +310,7 @@ export class BalanceService extends Service implements IBalanceService {
 
         if (current.opening === previous.closing) {
             cache.set(calendarDateYmd, current);
+            this.setCachedDayTotals(userID, calendarDateYmd, current);
             return current;
         }
 
@@ -302,6 +321,7 @@ export class BalanceService extends Service implements IBalanceService {
             closing: opening + current.dayNet,
         };
         cache.set(calendarDateYmd, normalized);
+        this.setCachedDayTotals(userID, calendarDateYmd, normalized);
         return normalized;
     }
 
@@ -505,6 +525,7 @@ export class BalanceService extends Service implements IBalanceService {
             where: { id: existingAction.balanceID },
             data: { balance: { increment: amountDifference } }
         });
+        this.invalidateUserDayTotalsCache(existingAction.balance.userID);
 
         return this.formatBalanceAction(adjustmentAction);
     }
@@ -551,6 +572,39 @@ export class BalanceService extends Service implements IBalanceService {
                 data: { balance: { increment: reversalAmount } }
             });
         });
+        this.invalidateUserDayTotalsCache(existingAction.balance.userID);
+    }
+
+    private dayTotalsCacheKey(userID: number, calendarDateYmd: string): string {
+        return `${userID}:${calendarDateYmd}`;
+    }
+
+    private getCachedDayTotals(userID: number, calendarDateYmd: string): BalanceDayTotalsResult | null {
+        const key = this.dayTotalsCacheKey(userID, calendarDateYmd);
+        const cached = BalanceService.dayTotalsCache.get(key);
+        if (!cached) return null;
+        if (cached.expiresAt < Date.now()) {
+            BalanceService.dayTotalsCache.delete(key);
+            return null;
+        }
+        return cached.value;
+    }
+
+    private setCachedDayTotals(userID: number, calendarDateYmd: string, value: BalanceDayTotalsResult): void {
+        const key = this.dayTotalsCacheKey(userID, calendarDateYmd);
+        BalanceService.dayTotalsCache.set(key, {
+            value,
+            expiresAt: Date.now() + BalanceService.DAY_TOTALS_CACHE_TTL_MS,
+        });
+    }
+
+    private invalidateUserDayTotalsCache(userID: number): void {
+        const prefix = `${userID}:`;
+        for (const key of BalanceService.dayTotalsCache.keys()) {
+            if (key.startsWith(prefix)) {
+                BalanceService.dayTotalsCache.delete(key);
+            }
+        }
     }
 
     private async createInitialBalance(userID: number): Promise<BalanceWithActions> {
