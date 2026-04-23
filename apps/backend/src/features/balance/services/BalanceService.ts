@@ -230,22 +230,79 @@ export class BalanceService extends Service implements IBalanceService {
             throw new ValidationError("Invalid date; use YYYY-MM-DD");
         }
 
+        const earliestAction = await this.db.balanceAction.findFirst({
+            where: { balance: { userID } },
+            orderBy: { created: "asc" },
+            select: { created: true },
+        });
+        const earliestTicket = await this.db.ticket.findFirst({
+            where: { creatorID: userID },
+            orderBy: { created: "asc" },
+            select: { created: true },
+        });
+
+        const continuityCache = new Map<string, BalanceDayTotalsResult>();
+        const earliestActionYmd = earliestAction
+            ? DateTime.fromJSDate(earliestAction.created).setZone("Europe/Amsterdam").startOf("day").toFormat("yyyy-MM-dd")
+            : null;
+        const earliestTicketYmd = earliestTicket
+            ? DateTime.fromJSDate(earliestTicket.created).setZone("Europe/Amsterdam").startOf("day").toFormat("yyyy-MM-dd")
+            : null;
+        const earliestCalendarDateYmd =
+            earliestActionYmd && earliestTicketYmd
+                ? (earliestActionYmd < earliestTicketYmd ? earliestActionYmd : earliestTicketYmd)
+                : (earliestActionYmd ?? earliestTicketYmd);
+
+        return this.computeBalanceDayTotalsWithContinuity(
+            userID,
+            parsed,
+            calendarDateYmd,
+            earliestCalendarDateYmd,
+            continuityCache
+        );
+    }
+
+    private async computeBalanceDayTotalsWithContinuity(
+        userID: number,
+        parsed: DateTime,
+        calendarDateYmd: string,
+        earliestCalendarDateYmd: string | null,
+        cache: Map<string, BalanceDayTotalsResult>
+    ): Promise<BalanceDayTotalsResult> {
+        const cached = cache.get(calendarDateYmd);
+        if (cached) return cached;
+
         const current = await this.computeBalanceDayTotalsRaw(userID, parsed, calendarDateYmd);
+
+        // Base case: no history, or this is the first ledger day for this user.
+        if (!earliestCalendarDateYmd || calendarDateYmd <= earliestCalendarDateYmd) {
+            cache.set(calendarDateYmd, current);
+            return current;
+        }
 
         const previousParsed = parsed.minus({ days: 1 });
         const previousCalendarDateYmd = previousParsed.toFormat("yyyy-MM-dd");
-        const previous = await this.computeBalanceDayTotalsRaw(userID, previousParsed, previousCalendarDateYmd);
+        const previous = await this.computeBalanceDayTotalsWithContinuity(
+            userID,
+            previousParsed,
+            previousCalendarDateYmd,
+            earliestCalendarDateYmd,
+            cache
+        );
 
         if (current.opening === previous.closing) {
+            cache.set(calendarDateYmd, current);
             return current;
         }
 
         const opening = previous.closing;
-        return {
+        const normalized = {
             ...current,
             opening,
             closing: opening + current.dayNet,
         };
+        cache.set(calendarDateYmd, normalized);
+        return normalized;
     }
 
     private async computeBalanceDayTotalsRaw(
