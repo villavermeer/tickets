@@ -230,6 +230,29 @@ export class BalanceService extends Service implements IBalanceService {
             throw new ValidationError("Invalid date; use YYYY-MM-DD");
         }
 
+        const current = await this.computeBalanceDayTotalsRaw(userID, parsed, calendarDateYmd);
+
+        const previousParsed = parsed.minus({ days: 1 });
+        const previousCalendarDateYmd = previousParsed.toFormat("yyyy-MM-dd");
+        const previous = await this.computeBalanceDayTotalsRaw(userID, previousParsed, previousCalendarDateYmd);
+
+        if (current.opening === previous.closing) {
+            return current;
+        }
+
+        const opening = previous.closing;
+        return {
+            ...current,
+            opening,
+            closing: opening + current.dayNet,
+        };
+    }
+
+    private async computeBalanceDayTotalsRaw(
+        userID: number,
+        parsed: DateTime,
+        calendarDateYmd: string
+    ): Promise<BalanceDayTotalsResult> {
         const dayStartUtc = parsed.startOf("day").toUTC().toJSDate();
         const nextDayStartUtc = parsed.plus({ days: 1 }).startOf("day").toUTC().toJSDate();
 
