@@ -13,6 +13,7 @@ import { DateTime } from "luxon";
 import PDFDocument from "pdfkit";
 import { IPrizeService } from "../../prize/services/PrizeService";
 import { RaffleService } from "../../raffle/services/RaffleService";
+import { isGameUnavailableForDate } from "../../game/utils/gameAvailability";
 
 export interface ITicketService {
     all(start: string, end: string, managerID?: string, runnerID?: string): Promise<TicketInterface[]>;
@@ -165,6 +166,12 @@ export class TicketService extends Service implements ITicketService {
 
         if (games.length !== data.games.length) {
             throw new ValidationError("Er is iets misgegaan bij het aanmaken van het ticket.");
+        }
+
+        const unavailableGames = games.filter((game) => isGameUnavailableForDate(game.name, nowNL));
+        if (unavailableGames.length > 0) {
+            const unavailableList = unavailableGames.map((game) => game.name).join(", ");
+            throw new ValidationError(`Deze spellen zijn gesloten op 27 april 2026: ${unavailableList}.`);
         }
 
         // Check daily limits for all codes (skip for admin accounts and daily tickets)
