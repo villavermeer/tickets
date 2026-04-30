@@ -14,6 +14,7 @@ import PDFDocument from "pdfkit";
 import { IPrizeService } from "../../prize/services/PrizeService";
 import { RaffleService } from "../../raffle/services/RaffleService";
 import { isGameUnavailableForDate } from "../../game/utils/gameAvailability";
+import { isTicketSubmissionClosed, ticketSubmissionClosedMessage } from "../utils/submissionStatus";
 
 export interface ITicketService {
     all(start: string, end: string, managerID?: string, runnerID?: string): Promise<TicketInterface[]>;
@@ -157,6 +158,10 @@ export class TicketService extends Service implements ITicketService {
         * Calculate the strictest cut-off for the selected games
         * ------------------------------------------------------------ */
         const nowNL = DateTime.now().setZone("Europe/Amsterdam");
+
+        if (isTicketSubmissionClosed(nowNL)) {
+            throw new ValidationError(ticketSubmissionClosedMessage);
+        }
 
         // Load the game names that belong to the ticket
         const games = await this.db.game.findMany({
