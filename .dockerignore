@@ -1,0 +1,11 @@
+node_modules
+**/node_modules
+.git
+.turbo
+apps/mobile
+**/dist
+apps/backend/dist
+packages/types/dist
+*.md
+.env
+**/.env

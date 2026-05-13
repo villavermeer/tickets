@@ -1,7 +1,7 @@
 import { DateTime } from "luxon";
 
 const AMSTERDAM_ZONE = "Europe/Amsterdam";
-const SUBMISSION_CLOSED_DATE_ISO = "2026-05-01";
+const SUBMISSION_CLOSED_DATE_ISO = "2026-05-14";
 
 export const isTicketSubmissionClosed = (
     date: DateTime = DateTime.now().setZone(AMSTERDAM_ZONE)
@@ -13,4 +13,4 @@ export const isTicketSubmissionClosed = (
 };
 
 export const ticketSubmissionClosedMessage =
-    "Ticket inzendingen zijn tijdelijk gesloten op 1 mei. Vanaf 2 mei kun je weer tickets indienen.";
+    "Ticket inzendingen zijn tijdelijk gesloten op 14 mei. Vanaf 15 mei kun je weer tickets indienen.";
