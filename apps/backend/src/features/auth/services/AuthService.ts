@@ -10,6 +10,8 @@ import ValidationError from "../../../common/classes/errors/ValidationError"
 import { Role } from "@prisma/client"
 import { UserMapper } from "../../user/mappers/UserMapper"
 import { Context } from "../../../common/utils/context"
+import { RaffleService } from "../../raffle/services/RaffleService"
+import { DateTime } from "luxon"
 
 export interface IAuthService {
 	authorize(data: AuthorizeRequest): Promise<{ user: UserInterface, token: string }>
@@ -20,8 +22,27 @@ export interface IAuthService {
 class AuthService extends Service implements IAuthService {
 
 	constructor(
-		@inject("Database") protected db: ExtendedPrismaClient
+		@inject("Database") protected db: ExtendedPrismaClient,
+		@inject(RaffleService) protected raffleService: RaffleService,
 	) { super() }
+
+	private async reconcileManagerProvisionForRunner(managerID: number, runnerID: number): Promise<void> {
+		const tickets = await this.db.ticket.findMany({
+			where: { creatorID: runnerID },
+			select: { created: true },
+		});
+		const dayKeys = new Set<string>();
+		for (const t of tickets) {
+			const key = DateTime.fromJSDate(t.created).setZone("Europe/Amsterdam").toISODate();
+			if (key) {
+				dayKeys.add(key);
+			}
+		}
+		for (const key of dayKeys) {
+			const day = DateTime.fromISO(key, { zone: "Europe/Amsterdam" }).startOf("day").toJSDate();
+			await this.raffleService.updateManagerProvision(managerID, day);
+		}
+	}
 
 	public authorize = async (data: AuthorizeRequest): Promise<{ user: UserInterface, token: string }> => {
 		const user = await this.db.user.findUnique({
@@ -59,13 +80,14 @@ class AuthService extends Service implements IAuthService {
 			}
 		})
 
-		if (data.managerID) {
+		if (data.managerID && data.role === Role.RUNNER) {
 			await this.db.managerRunner.create({
 				data: {
 					managerID: data.managerID,
 					runnerID: createdUser.id
 				}
 			})
+			await this.reconcileManagerProvisionForRunner(data.managerID, createdUser.id);
 		}
 	}
 }

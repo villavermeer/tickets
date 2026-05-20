@@ -2,7 +2,7 @@
  * Koppel genoemde lopers aan een manager (op displaynaam) en herbereken
  * `updateManagerProvision` voor alle dagen waar die lopers tickets hebben.
  *
- * Standaard: manager Eva, lopers Shushu, Juni, Fara, Josh.
+ * Standaard: manager Eva, lopers Shushu, Juni, Junir, Fara, Josh.
  *
  *   cd apps/backend && npx ts-node -r tsconfig-paths/register src/scripts/link-manager-runners.ts
  */
@@ -15,7 +15,7 @@ import { RaffleService } from "../features/raffle/services/RaffleService";
 import { DateTime } from "luxon";
 
 const MANAGER_NAME = "Eva";
-const RUNNER_NAMES = ["Shushu", "Juni", "Fara", "Josh"];
+const RUNNER_NAMES = ["Shushu", "Juni", "Junir", "Fara", "Josh"];
 
 async function main() {
     container.registerInstance("Database", prisma);

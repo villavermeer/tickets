@@ -35,7 +35,13 @@ export class RevenueController extends Controller implements IRevenueController 
     public getRevenueByManager = async (req: Request, res: Response): Promise<void> => {
         try {
             const revenueService = container.resolve<IRevenueService>("RevenueService");
-            const revenue = await revenueService.getRevenueByManager(Number(req.params.id), req.query.date ? new Date(req.query.date as string) : undefined, req.query.includeRunners === 'true')
+            const includeRunners =
+                req.query.includeRunners === undefined || req.query.includeRunners === 'true';
+            const revenue = await revenueService.getRevenueByManager(
+                Number(req.params.id),
+                req.query.date ? new Date(req.query.date as string) : undefined,
+                includeRunners
+            )
 
             res.status(200).json(formatSuccessResponse('Revenue', revenue));
         } catch (error) {
