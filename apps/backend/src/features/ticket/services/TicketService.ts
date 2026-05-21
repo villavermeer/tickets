@@ -105,16 +105,11 @@ export class TicketService extends Service implements ITicketService {
             whereClause.creatorID = user.id;
         } else {
             // For managers or other roles, apply filters based on managerID or runnerID
+            if (managerID) {
+                whereClause.creatorID = Number(managerID);
+            }
             if (runnerID) {
                 whereClause.creatorID = Number(runnerID);
-            } else if (managerID) {
-                const mid = Number(managerID);
-                const managerRunners = await this.db.managerRunner.findMany({
-                    where: { managerID: mid },
-                    select: { runnerID: true },
-                });
-                const runnerIds = managerRunners.map((mr) => mr.runnerID);
-                whereClause.creatorID = { in: [mid, ...runnerIds] };
             }
         }
 
