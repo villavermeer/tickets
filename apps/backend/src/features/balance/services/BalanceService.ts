@@ -242,112 +242,91 @@ export class BalanceService extends Service implements IBalanceService {
         const cached = this.getCachedDayTotals(userID, calendarDateYmd);
         if (cached) return cached;
 
-        const earliestAction = await this.db.balanceAction.findFirst({
-            where: { balance: { userID } },
-            orderBy: { created: "asc" },
-            select: { created: true },
-        });
-        const earliestTicket = await this.db.ticket.findFirst({
-            where: { creatorID: userID },
-            orderBy: { created: "asc" },
-            select: { created: true },
-        });
-
-        const continuityCache = new Map<string, BalanceDayTotalsResult>();
-        const earliestActionYmd = earliestAction
-            ? DateTime.fromJSDate(earliestAction.created).setZone("Europe/Amsterdam").startOf("day").toFormat("yyyy-MM-dd")
-            : null;
-        const earliestTicketYmd = earliestTicket
-            ? DateTime.fromJSDate(earliestTicket.created).setZone("Europe/Amsterdam").startOf("day").toFormat("yyyy-MM-dd")
-            : null;
-        const earliestCalendarDateYmd =
-            earliestActionYmd && earliestTicketYmd
-                ? (earliestActionYmd < earliestTicketYmd ? earliestActionYmd : earliestTicketYmd)
-                : (earliestActionYmd ?? earliestTicketYmd);
-
-        return this.computeBalanceDayTotalsWithContinuity(
-            userID,
-            parsed,
-            calendarDateYmd,
-            earliestCalendarDateYmd,
-            continuityCache
-        );
+        return this.computeBalanceDayTotalsAttributed(userID, parsed, calendarDateYmd);
     }
 
-    private async computeBalanceDayTotalsWithContinuity(
-        userID: number,
-        parsed: DateTime,
-        calendarDateYmd: string,
-        earliestCalendarDateYmd: string | null,
-        cache: Map<string, BalanceDayTotalsResult>
-    ): Promise<BalanceDayTotalsResult> {
-        const inCallCached = cache.get(calendarDateYmd);
-        if (inCallCached) return inCallCached;
-        const sharedCached = this.getCachedDayTotals(userID, calendarDateYmd);
-        if (sharedCached) {
-            cache.set(calendarDateYmd, sharedCached);
-            return sharedCached;
-        }
-
-        const current = await this.computeBalanceDayTotalsRaw(userID, parsed, calendarDateYmd);
-
-        // Base case: no history, or this is the first ledger day for this user.
-        if (!earliestCalendarDateYmd || calendarDateYmd <= earliestCalendarDateYmd) {
-            cache.set(calendarDateYmd, current);
-            this.setCachedDayTotals(userID, calendarDateYmd, current);
-            return current;
-        }
-
-        const previousParsed = parsed.minus({ days: 1 });
-        const previousCalendarDateYmd = previousParsed.toFormat("yyyy-MM-dd");
-        const previous = await this.computeBalanceDayTotalsWithContinuity(
-            userID,
-            previousParsed,
-            previousCalendarDateYmd,
-            earliestCalendarDateYmd,
-            cache
-        );
-
-        if (current.opening === previous.closing) {
-            cache.set(calendarDateYmd, current);
-            this.setCachedDayTotals(userID, calendarDateYmd, current);
-            return current;
-        }
-
-        const opening = previous.closing;
-        const normalized = {
-            ...current,
-            opening,
-            closing: opening + current.dayNet,
-        };
-        cache.set(calendarDateYmd, normalized);
-        this.setCachedDayTotals(userID, calendarDateYmd, normalized);
-        return normalized;
-    }
-
-    private async computeBalanceDayTotalsRaw(
+    private async computeBalanceDayTotalsAttributed(
         userID: number,
         parsed: DateTime,
         calendarDateYmd: string
     ): Promise<BalanceDayTotalsResult> {
+        const cached = this.getCachedDayTotals(userID, calendarDateYmd);
+        if (cached) return cached;
+
+        const activity = await this.computeDayActivity(userID, parsed, calendarDateYmd);
+        const closing = await this.computeAttributedSumThroughDay(userID, calendarDateYmd);
+        const opening = closing - activity.dayNet;
+
+        const result: BalanceDayTotalsResult = {
+            opening,
+            ...activity,
+            closing,
+        };
+        this.setCachedDayTotals(userID, calendarDateYmd, result);
+        return result;
+    }
+
+    /**
+     * Ledger total through this Amsterdam business day (inclusive), using business-day attribution.
+     * Handles relayed ticket rows and reference-dated provision without recursive day chains.
+     */
+    private async computeAttributedSumThroughDay(
+        userID: number,
+        calendarDateYmd: string
+    ): Promise<number> {
+        const actions = await this.db.balanceAction.findMany({
+            where: { balance: { userID } },
+            select: { type: true, amount: true, reference: true, created: true },
+        });
+
+        const ticketBusinessDateCache = new Map<number, string | null>();
+        let sum = 0;
+
+        for (const action of actions) {
+            const businessDate = await this.getActionBusinessDateYmd(action, ticketBusinessDateCache);
+            if (businessDate && businessDate <= calendarDateYmd) {
+                sum += action.amount;
+            }
+        }
+
+        return sum;
+    }
+
+    private async getActionBusinessDateYmd(
+        action: { type: BalanceActionType; reference: string | null; created: Date },
+        ticketBusinessDateCache: Map<number, string | null>
+    ): Promise<string | null> {
+        const reference = action.reference ?? "";
+
+        if (action.type === BalanceActionType.PROVISION) {
+            const match = reference.match(/Provisie (?:lopers )?(\d{2}-\d{2}-\d{4})/);
+            if (match) {
+                const [dd, mm, yyyy] = match[1].split("-");
+                return `${yyyy}-${mm}-${dd}`;
+            }
+        }
+
+        const ticketId = this.extractTicketIdFromReference(reference);
+        if (ticketId !== null) {
+            let businessDate = ticketBusinessDateCache.get(ticketId);
+            if (businessDate === undefined) {
+                businessDate = await this.getTicketBusinessDateYmd(ticketId);
+                ticketBusinessDateCache.set(ticketId, businessDate);
+            }
+            if (businessDate) return businessDate;
+        }
+
+        return DateTime.fromJSDate(action.created).setZone("Europe/Amsterdam").toFormat("yyyy-MM-dd");
+    }
+
+    /** Day activity with ticket-business-day attribution for relay / backdated rows. */
+    private async computeDayActivity(
+        userID: number,
+        parsed: DateTime,
+        calendarDateYmd: string
+    ): Promise<Omit<BalanceDayTotalsResult, "opening" | "closing">> {
         const dayStartUtc = parsed.startOf("day").toUTC().toJSDate();
         const nextDayStartUtc = parsed.plus({ days: 1 }).startOf("day").toUTC().toJSDate();
-
-        const frozenSnapshotInstant = parsed.minus({ days: 1 }).startOf("day").toUTC().toJSDate();
-
-        let opening: number;
-        const frozen = await this.getFrozenBalance(userID, frozenSnapshotInstant);
-        if (frozen !== null) {
-            opening = frozen;
-        } else {
-            const priorActions = await this.db.balanceAction.findMany({
-                where: {
-                    balance: { userID },
-                    created: { lt: dayStartUtc },
-                },
-            });
-            opening = priorActions.reduce((sum, a) => sum + a.amount, 0);
-        }
 
         const dayActionsByCreated = await this.db.balanceAction.findMany({
             where: {
@@ -359,6 +338,50 @@ export class BalanceService extends Service implements IBalanceService {
             },
             orderBy: { created: "asc" },
         });
+
+        const amsterdamDateLabel = parsed.toFormat("dd-MM-yyyy");
+        const ticketBusinessDateCache = new Map<number, string | null>();
+
+        const belongsToCalendarDay = async (
+            action: (typeof dayActionsByCreated)[number]
+        ): Promise<boolean> => {
+            if (
+                action.type === BalanceActionType.CORRECTION ||
+                action.type === BalanceActionType.PAYOUT
+            ) {
+                return true;
+            }
+
+            const reference = action.reference ?? "";
+
+            if (action.type === BalanceActionType.PROVISION) {
+                const match = reference.match(/Provisie (?:lopers )?(\d{2}-\d{2}-\d{4})/);
+                if (match) {
+                    const [dd, mm, yyyy] = match[1].split("-");
+                    return `${yyyy}-${mm}-${dd}` === calendarDateYmd;
+                }
+                return true;
+            }
+
+            const ticketId = this.extractTicketIdFromReference(reference);
+            if (ticketId === null) {
+                return true;
+            }
+
+            let businessDate = ticketBusinessDateCache.get(ticketId);
+            if (businessDate === undefined) {
+                businessDate = await this.getTicketBusinessDateYmd(ticketId);
+                ticketBusinessDateCache.set(ticketId, businessDate);
+            }
+            return businessDate === calendarDateYmd;
+        };
+
+        const createdOnDay = [];
+        for (const action of dayActionsByCreated) {
+            if (await belongsToCalendarDay(action)) {
+                createdOnDay.push(action);
+            }
+        }
 
         /**
          * Also pick up ledger rows tied to tickets whose *business* day in Amsterdam is this date,
@@ -413,12 +436,29 @@ export class BalanceService extends Service implements IBalanceService {
         }
 
         const mergedById = new Map<number, (typeof dayActionsByCreated)[number]>();
-        for (const a of dayActionsByCreated) {
+        for (const a of createdOnDay) {
             mergedById.set(a.id, a);
         }
         for (const a of attributedByTicketDay) {
             mergedById.set(a.id, a);
         }
+
+        // Provision rows are dated "now" but reference the Amsterdam business day (dd-MM-yyyy).
+        const provisionByReference = await this.db.balanceAction.findMany({
+            where: {
+                balance: { userID },
+                type: BalanceActionType.PROVISION,
+                OR: [
+                    { reference: { startsWith: `Provisie ${amsterdamDateLabel}` } },
+                    { reference: { startsWith: `Provisie lopers ${amsterdamDateLabel}` } },
+                ],
+            },
+            orderBy: { created: "asc" },
+        });
+        for (const a of provisionByReference) {
+            mergedById.set(a.id, a);
+        }
+
         const dayActions = [...mergedById.values()];
 
         let ticketSale = 0;
@@ -450,18 +490,47 @@ export class BalanceService extends Service implements IBalanceService {
         }
 
         const dayNet = ticketSale + correction + payout + prize + provision;
-        const closing = opening + dayNet;
 
         return {
-            opening,
             ticketSale,
             correction,
             payout,
             prize,
             provision,
             dayNet,
-            closing,
         };
+    }
+
+    private extractTicketIdFromReference(reference: string): number | null {
+        const adjustMatch = reference.match(/TICKET_SALE_ADJUST:(\d+)/);
+        if (adjustMatch) {
+            const id = Number(adjustMatch[1]);
+            return Number.isFinite(id) ? id : null;
+        }
+        const ticketSaleMatch = reference.match(/TICKET_SALE:(\d+)/);
+        if (ticketSaleMatch) {
+            const id = Number(ticketSaleMatch[1]);
+            return Number.isFinite(id) ? id : null;
+        }
+        const prizeMatch = reference.match(/^PRIZE:\d+:(\d+):/);
+        if (prizeMatch) {
+            const id = Number(prizeMatch[1]);
+            return Number.isFinite(id) ? id : null;
+        }
+        return null;
+    }
+
+    private async getTicketBusinessDateYmd(ticketId: number): Promise<string | null> {
+        try {
+            const rows = await this.db.$queryRaw<Array<{ d: Date }>>(Prisma.sql`
+                SELECT (timezone('Europe/Amsterdam', created))::date as d
+                FROM tickets WHERE id = ${ticketId}
+            `);
+            if (!rows[0]?.d) return null;
+            return DateTime.fromJSDate(rows[0].d).toFormat("yyyy-MM-dd");
+        } catch {
+            return null;
+        }
     }
 
     public async updateBalanceAction(actionID: number, updates: Partial<CreateBalanceActionRequest>): Promise<BalanceAction> {
