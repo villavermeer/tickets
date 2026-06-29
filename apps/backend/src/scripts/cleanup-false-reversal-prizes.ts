@@ -64,7 +64,15 @@ async function main() {
             where: { id: prizeId },
             select: { id: true, amount: true, reference: true },
         });
-        if (!prize?.reference?.startsWith("PRIZE:")) continue;
+        if (!prize?.reference?.startsWith("PRIZE:")) {
+            for (const row of rows) {
+                if (!toDelete.includes(row.id)) {
+                    toDelete.push(row.id);
+                    falsePositiveCount++;
+                }
+            }
+            continue;
+        }
 
         const refParts = prize.reference.split(":");
         const raffleId = Number(refParts[1]);
