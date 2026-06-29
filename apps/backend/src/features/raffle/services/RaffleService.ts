@@ -721,6 +721,60 @@ export class RaffleService extends Service implements IRaffleService {
     }
 
     /**
+     * Stable reversal reference (no timestamp) so save() can run repeatedly without duplicates.
+     */
+    private reversalReferenceForPrize(prizeActionId: number): string {
+        return `REVERSAL_PRIZE:${prizeActionId}`;
+    }
+
+    /**
+     * Re-validate a prize using the same calculator as award time.
+     * Orphaned only when the ticket/code would no longer win under current winning numbers.
+     */
+    public async isPrizeActionStillValid(
+        action: { amount: number; reference: string | null },
+        gameID: number,
+        winningCodes: Array<{ code: string; order: number }>
+    ): Promise<boolean> {
+        const refParts = action.reference?.split(":");
+        if (!refParts || refParts.length !== 4 || refParts[0] !== "PRIZE") {
+            return true;
+        }
+
+        const ticketID = Number(refParts[2]);
+        const playedCode = refParts[3];
+        if (!Number.isFinite(ticketID) || !playedCode) {
+            return true;
+        }
+
+        const ticket = await this.db.ticket.findUnique({
+            where: { id: ticketID },
+            include: {
+                codes: { select: { code: true, value: true } },
+            },
+        });
+
+        if (!ticket) {
+            return false;
+        }
+
+        const matchingCodes = ticket.codes.filter((c) => c.code === playedCode);
+        if (matchingCodes.length === 0) {
+            return false;
+        }
+
+        const totalStake = matchingCodes.reduce((sum, c) => sum + c.value, 0);
+        const expectedPrize = this.calculatePrizeAmount(
+            playedCode,
+            totalStake,
+            gameID,
+            winningCodes
+        );
+
+        return expectedPrize > 0;
+    }
+
+    /**
      * Clean up orphaned prize balance actions.
      * These are prizes that were created based on old winning codes that have since been changed.
      * When raffle codes are corrected, old prizes may no longer be valid.
@@ -731,6 +785,7 @@ export class RaffleService extends Service implements IRaffleService {
         const amsterdamDate = DateTime.fromJSDate(date).setZone('Europe/Amsterdam');
         const startOfDay = amsterdamDate.startOf('day').toUTC().toJSDate();
         const endOfDay = amsterdamDate.endOf('day').toUTC().toJSDate();
+        const calendarDateYmd = amsterdamDate.toFormat('yyyy-MM-dd');
 
         // Get all raffles for this date
         const raffles = await this.db.raffle.findMany({
@@ -782,86 +837,97 @@ export class RaffleService extends Service implements IRaffleService {
             }
         }
 
-        // Find all prize balance actions for these raffles
+        // Only load prize actions for raffles on this business day
         const prizeActions = await this.db.balanceAction.findMany({
             where: {
                 type: BalanceActionType.PRIZE,
-                reference: {
-                    startsWith: 'PRIZE:'
-                }
-            }
+                OR: raffleIds.map((raffleId) => ({
+                    reference: { startsWith: `PRIZE:${raffleId}:` },
+                })),
+            },
         });
 
         let orphansDeleted = 0;
+        const affectedUserIDs = new Set<number>();
 
         for (const action of prizeActions) {
-            // Parse reference: PRIZE:raffleID:ticketID:code
             const refParts = action.reference?.split(':');
             if (!refParts || refParts.length !== 4 || refParts[0] !== 'PRIZE') continue;
 
             const actionRaffleId = parseInt(refParts[1], 10);
-            const actionTicketId = parseInt(refParts[2], 10);
             const actionCode = refParts[3];
 
-            // Only check prizes for raffles in this date range
             if (!raffleIds.includes(actionRaffleId)) continue;
 
-            // Find the game for this raffle
             const raffle = raffles.find(r => r.id === actionRaffleId);
             if (!raffle) continue;
 
             const gameData = winningCodesByGame.get(raffle.gameID);
             if (!gameData) continue;
 
-            // Check if this code matches any current winning code using suffix matching
-            const matchesWinningCode = gameData.winningCodes.some(wc => 
-                wc.code.endsWith(actionCode)
+            const reversalReference = this.reversalReferenceForPrize(action.id);
+
+            const existingReversal = await this.db.balanceAction.findFirst({
+                where: {
+                    balanceID: action.balanceID,
+                    type: BalanceActionType.CORRECTION,
+                    reference: reversalReference,
+                },
+                select: { id: true },
+            });
+            if (existingReversal) {
+                continue;
+            }
+
+            const stillValid = await this.isPrizeActionStillValid(
+                action,
+                raffle.gameID,
+                gameData.winningCodes
+            );
+            if (stillValid) {
+                continue;
+            }
+
+            console.debug(
+                `Reversing orphaned prize action ${action.id} (${action.reference}) - code "${actionCode}" no longer wins`
             );
 
-            if (!matchesWinningCode) {
-                // Idempotent: save() may run multiple times per day; never reverse the same prize twice.
-                const existingReversal = await this.db.balanceAction.findFirst({
-                    where: {
+            const prizeAmount = -action.amount;
+            const balanceRow = await this.db.balance.findUnique({
+                where: { id: action.balanceID },
+                select: { userID: true },
+            });
+
+            await this.db.$transaction(async (tx) => {
+                await tx.balanceAction.create({
+                    data: {
                         balanceID: action.balanceID,
                         type: BalanceActionType.CORRECTION,
-                        reference: { startsWith: `REVERSAL_PRIZE:${action.id}:` },
-                    },
-                    select: { id: true },
-                });
-                if (existingReversal) {
-                    continue;
-                }
-
-                // This prize is orphaned - the code no longer matches any winning code
-                console.debug(`Deleting orphaned prize action ${action.id} (${action.reference}) - code "${actionCode}" no longer matches any winning code`);
-
-                const prizeAmount = -action.amount; // Convert from negative (credit) to positive
-
-                await this.db.$transaction(async (tx) => {
-                    await tx.balanceAction.create({
-                        data: {
-                            balanceID: action.balanceID,
-                            type: BalanceActionType.CORRECTION,
-                            amount: action.amount,
-                            reference: `REVERSAL_PRIZE:${action.id}:${Date.now()}`,
-                        }
-                    });
-
-                    // Adjust the balance (remove the incorrectly credited prize)
-                    await tx.balance.update({
-                        where: { id: action.balanceID },
-                        data: {
-                            balance: { decrement: prizeAmount }
-                        }
-                    });
+                        amount: action.amount,
+                        reference: reversalReference,
+                    }
                 });
 
-                orphansDeleted++;
+                await tx.balance.update({
+                    where: { id: action.balanceID },
+                    data: {
+                        balance: { decrement: prizeAmount }
+                    }
+                });
+            });
+
+            if (balanceRow?.userID) {
+                affectedUserIDs.add(balanceRow.userID);
             }
+
+            orphansDeleted++;
         }
 
         if (orphansDeleted > 0) {
-            console.debug(`Deleted ${orphansDeleted} orphaned prize balance actions`);
+            console.debug(`Reversed ${orphansDeleted} orphaned prize balance actions`);
+            for (const userID of affectedUserIDs) {
+                await this.balanceService.refreshFrozenBalanceChainFromDay(userID, calendarDateYmd);
+            }
         } else {
             console.debug('No orphaned prizes found');
         }

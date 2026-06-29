@@ -2638,7 +2638,7 @@ export class TicketService extends Service implements ITicketService {
             where: {
                 balanceID: balanceAction.balanceID,
                 type: BalanceActionType.CORRECTION,
-                reference: { startsWith: `REVERSAL_TICKET_SALE:${balanceAction.id}:` },
+                reference: `REVERSAL_TICKET_SALE:${balanceAction.id}`,
             },
             select: { id: true },
         });
@@ -2656,7 +2656,7 @@ export class TicketService extends Service implements ITicketService {
                     balanceID: balanceAction.balanceID,
                     type: BalanceActionType.CORRECTION,
                     amount: -balanceAction.amount,
-                    reference: `REVERSAL_TICKET_SALE:${balanceAction.id}:${Date.now()}`,
+                    reference: `REVERSAL_TICKET_SALE:${balanceAction.id}`,
                 }
             });
 

@@ -115,13 +115,13 @@ function test1_codeAudit() {
         },
     ]);
 
-    // RaffleService.ts: cleanupOrphanedPrizes reversal should NOT backdate
+    // RaffleService.ts: REVERSAL_PRIZE should use stable reference (no timestamp)
     checkFile("features/raffle/services/RaffleService.ts", [
         {
-            regionStart: "REVERSAL_PRIZE:",
-            regionEnd: "})",
-            forbidden: /created:\s*action\.created/,
-            description: "cleanupOrphanedPrizes reversal still backdated to action.created",
+            regionStart: "reversalReferenceForPrize",
+            regionEnd: "return `REVERSAL_PRIZE:",
+            forbidden: /Date\.now\(\)/,
+            description: "REVERSAL_PRIZE reference still uses Date.now()",
         },
     ]);
 
@@ -135,13 +135,13 @@ function test1_codeAudit() {
         },
     ]);
 
-    // TicketService.ts: REVERSAL_TICKET_SALE should NOT backdate
+    // TicketService.ts: REVERSAL_TICKET_SALE should use stable reference
     checkFile("features/ticket/services/TicketService.ts", [
         {
-            regionStart: "REVERSAL_TICKET_SALE:",
+            regionStart: "REVERSAL_TICKET_SALE:${balanceAction.id}",
             regionEnd: "})",
-            forbidden: /created:\s*balanceAction\.created/,
-            description: "REVERSAL_TICKET_SALE still backdated to balanceAction.created",
+            forbidden: /Date\.now\(\)/,
+            description: "REVERSAL_TICKET_SALE still uses Date.now()",
         },
     ]);
 
