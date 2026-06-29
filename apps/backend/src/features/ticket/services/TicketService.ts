@@ -2634,6 +2634,21 @@ export class TicketService extends Service implements ITicketService {
 
         if (!balanceAction) return;
 
+        const existingReversal = await this.db.balanceAction.findFirst({
+            where: {
+                balanceID: balanceAction.balanceID,
+                type: BalanceActionType.CORRECTION,
+                reference: { startsWith: `REVERSAL_TICKET_SALE:${balanceAction.id}:` },
+            },
+            select: { id: true },
+        });
+        if (existingReversal) return;
+
+        const ticket = await this.db.ticket.findUnique({
+            where: { id: ticketID },
+            select: { created: true },
+        });
+
         // Append reversal action instead of deleting historical ledger rows.
         await this.db.$transaction(async (tx) => {
             await tx.balanceAction.create({
@@ -2651,8 +2666,11 @@ export class TicketService extends Service implements ITicketService {
             });
         });
 
-        // Update provision balance action
-        await this.raffleService.updateProvisionForUser(balanceAction.balance.userID, balanceAction.created);
+        // Recalculate provision for the ticket's Amsterdam business day, not the sale row timestamp.
+        await this.raffleService.updateProvisionForUser(
+            balanceAction.balance.userID,
+            ticket?.created ?? balanceAction.created
+        );
     }
 }
 

@@ -1,4 +1,4 @@
-import { inject, singleton } from 'tsyringe';
+import { inject, singleton, delay } from 'tsyringe';
 import Service from '../../../common/services/Service';
 import { ExtendedPrismaClient } from '../../../common/utils/prisma';
 import { CreateRaffleRequest } from '../types/requests';
@@ -11,6 +11,7 @@ import { GameInterface, TicketInterface } from '@tickets/types';
 import { DateTime } from 'luxon';
 import { createPrizeReference } from '../utils/prizeReference';
 import { Role } from '@prisma/client';
+import { BalanceService } from '../../balance/services/BalanceService';
 
 export interface IRaffleService {
     save(data: Array<CreateRaffleRequest>): Promise<void>
@@ -25,7 +26,8 @@ export interface IRaffleService {
 export class RaffleService extends Service implements IRaffleService {
 
     constructor(
-        @inject('Database') protected db: ExtendedPrismaClient
+        @inject('Database') protected db: ExtendedPrismaClient,
+        @inject(delay(() => BalanceService)) private balanceService: BalanceService,
     ) { super() }
 
     public async find(id: number) {
@@ -817,6 +819,19 @@ export class RaffleService extends Service implements IRaffleService {
             );
 
             if (!matchesWinningCode) {
+                // Idempotent: save() may run multiple times per day; never reverse the same prize twice.
+                const existingReversal = await this.db.balanceAction.findFirst({
+                    where: {
+                        balanceID: action.balanceID,
+                        type: BalanceActionType.CORRECTION,
+                        reference: { startsWith: `REVERSAL_PRIZE:${action.id}:` },
+                    },
+                    select: { id: true },
+                });
+                if (existingReversal) {
+                    continue;
+                }
+
                 // This prize is orphaned - the code no longer matches any winning code
                 console.debug(`Deleting orphaned prize action ${action.id} (${action.reference}) - code "${actionCode}" no longer matches any winning code`);
 
@@ -858,48 +873,13 @@ export class RaffleService extends Service implements IRaffleService {
      * become an immutable snapshot rather than a live aggregation.
      */
     private async freezeBalances(date: Date): Promise<void> {
-        console.debug(`Freezing balances for date: ${date.toISOString()}`);
-
         const amsterdamDate = DateTime.fromJSDate(date).setZone('Europe/Amsterdam');
-        const startOfDay = amsterdamDate.startOf('day').toUTC().toJSDate();
-        const endOfDay = amsterdamDate.endOf('day').toUTC().toJSDate();
+        const calendarDateYmd = amsterdamDate.toFormat('yyyy-MM-dd');
+        console.debug(`Freezing balances for date: ${calendarDateYmd} (Amsterdam)`);
 
-        const userTotals = await this.db.balanceAction.groupBy({
-            by: ['balanceID'],
-            where: {
-                created: { lte: endOfDay }
-            },
-            _sum: { amount: true }
-        });
+        await this.balanceService.refreshFrozenBalancesForCalendarDay(calendarDateYmd);
 
-        if (userTotals.length === 0) {
-            console.debug('No balance actions found, skipping freeze');
-            return;
-        }
-
-        const balanceIDs = userTotals.map(t => t.balanceID);
-        const balances = await this.db.balance.findMany({
-            where: { id: { in: balanceIDs } },
-            select: { id: true, userID: true }
-        });
-        const balanceToUser = new Map(balances.map(b => [b.id, b.userID]));
-
-        let frozen = 0;
-        for (const row of userTotals) {
-            const userID = balanceToUser.get(row.balanceID);
-            if (!userID) continue;
-
-            const eodBalance = row._sum.amount ?? 0;
-
-            await this.db.frozenBalance.upsert({
-                where: { userID_date: { userID, date: startOfDay } },
-                update: { balance: eodBalance },
-                create: { userID, date: startOfDay, balance: eodBalance }
-            });
-            frozen++;
-        }
-
-        console.debug(`Frozen ${frozen} user balances for ${amsterdamDate.toFormat('dd-MM-yyyy')}`);
+        console.debug(`Frozen balance chain refreshed from ${calendarDateYmd} through today`);
     }
 
     /**
