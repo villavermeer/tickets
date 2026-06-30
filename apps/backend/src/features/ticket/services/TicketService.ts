@@ -176,7 +176,8 @@ export class TicketService extends Service implements ITicketService {
         const unavailableGames = games.filter((game) => isGameUnavailableForDate(game.name, nowNL));
         if (unavailableGames.length > 0) {
             const unavailableList = unavailableGames.map((game) => game.name).join(", ");
-            throw new ValidationError(`Deze spellen zijn gesloten op 27 april 2026: ${unavailableList}.`);
+            const formattedDate = nowNL.setLocale("nl").toFormat("d MMMM yyyy");
+            throw new ValidationError(`Deze spellen zijn gesloten op ${formattedDate}: ${unavailableList}.`);
         }
 
         // Check daily limits for all codes (skip for admin accounts and daily tickets)
