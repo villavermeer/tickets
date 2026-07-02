@@ -4,7 +4,7 @@ const AMSTERDAM_ZONE = "Europe/Amsterdam";
 
 const GAME_CLOSURES: Array<{ date: string; games: string[] }> = [
     { date: "2026-04-27", games: ["Flamingo", "WNK"] },
-    { date: "2026-07-02", games: ["WNK"] },
+    { date: "2026-07-02", games: ["WNK", "WNK napa"] },
 ];
 
 export const isGameUnavailableForDate = (
