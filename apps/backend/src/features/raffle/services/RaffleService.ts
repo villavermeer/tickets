@@ -10,6 +10,10 @@ import { Game, Ticket, BalanceActionType } from '@prisma/client';
 import { GameInterface, TicketInterface } from '@tickets/types';
 import { DateTime } from 'luxon';
 import { createPrizeReference } from '../utils/prizeReference';
+import {
+    playedCodeMatchesWinningSuffixes,
+    winningCodeMatchesPlayedCode,
+} from '../utils/prizeMatching';
 import { Role } from '@prisma/client';
 import { BalanceService } from '../../balance/services/BalanceService';
 
@@ -631,10 +635,13 @@ export class RaffleService extends Service implements IRaffleService {
 
                 // Process each unique code (summing prizes for duplicates)
                 for (const [codeStr, codeInstances] of codesByString) {
-                    // Ensure deterministic ordering for consistent references
                     const orderedInstances = [...codeInstances].sort((a, b) => a.id - b.id);
 
-                    // Sum stake values for all instances of this code
+                    const winningCodeStrings = winningCodes.map((wc) => wc.code);
+                    if (!playedCodeMatchesWinningSuffixes(codeStr, winningCodeStrings)) {
+                        continue;
+                    }
+
                     const totalStake = orderedInstances.reduce((sum, instance) => sum + instance.value, 0);
 
                     // Calculate prize for this code using total stake
@@ -971,7 +978,7 @@ export class RaffleService extends Service implements IRaffleService {
         let total = 0;
 
         for (const { code: winningCode, order } of winningCodesWithOrder) {
-            if (!winningCode.endsWith(playedCode)) continue;
+            if (!winningCodeMatchesPlayedCode(winningCode, playedCode)) continue;
 
             const multiplier = isSuper4
                 ? (MULTIPLIERS.SUPER4 as any)[codeLength] ?? 0

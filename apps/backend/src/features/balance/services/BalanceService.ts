@@ -598,7 +598,10 @@ export class BalanceService extends Service implements IBalanceService {
 
         const dayActions = [...mergedById.values()];
 
-        let ticketSale = 0;
+        // Inleg = final ticket stake totals (matches loper-overzicht), not raw ledger TICKET_SALE rows
+        // which double-count TICKET_SALE_ADJUST deltas.
+        const ticketSale = await this.computeAttributedTicketSaleCents(userID, calendarDateYmd);
+
         let correction = 0;
         let payout = 0;
         let prize = 0;
@@ -607,7 +610,6 @@ export class BalanceService extends Service implements IBalanceService {
         for (const a of dayActions) {
             switch (a.type) {
                 case BalanceActionType.TICKET_SALE:
-                    ticketSale += a.amount;
                     break;
                 case BalanceActionType.CORRECTION:
                     correction += a.amount;
@@ -636,6 +638,40 @@ export class BalanceService extends Service implements IBalanceService {
             provision,
             dayNet,
         };
+    }
+
+    /** Sum of final ticket code values for tickets on this Amsterdam business day. */
+    private async computeAttributedTicketSaleCents(
+        userID: number,
+        calendarDateYmd: string
+    ): Promise<number> {
+        let ticketRows: Array<{ id: number }> = [];
+        try {
+            ticketRows = await this.db.$queryRaw<Array<{ id: number }>>(Prisma.sql`
+                SELECT id FROM tickets
+                WHERE "creatorID" = ${userID}
+                AND (timezone('Europe/Amsterdam', created))::date = CAST(${calendarDateYmd} AS DATE)
+            `);
+        } catch {
+            return 0;
+        }
+
+        if (ticketRows.length === 0) return 0;
+
+        const tickets = await this.db.ticket.findMany({
+            where: { id: { in: ticketRows.map((r) => r.id) } },
+            select: {
+                codes: { select: { value: true } },
+                games: { select: { id: true } },
+            },
+        });
+
+        let total = 0;
+        for (const ticket of tickets) {
+            const gameCount = Math.max(ticket.games.length, 1);
+            total += ticket.codes.reduce((sum, code) => sum + code.value, 0) * gameCount;
+        }
+        return total;
     }
 
     private extractTicketIdFromReference(reference: string): number | null {

@@ -4,6 +4,7 @@ import { ExtendedPrismaClient } from "../../../common/utils/prisma";
 import { Context } from "../../../common/utils/context";
 import { Prisma, Role } from "@prisma/client";
 import { DateTime } from "luxon";
+import { winningCodeMatchesPlayedCode } from "../../raffle/utils/prizeMatching";
 
 // Multiplier matrix provided by PO
 // Amount won = stake (inleg) x multiplier
@@ -94,7 +95,7 @@ export class PrizeService extends Service implements IPrizeService {
         const perOccurrence: Array<{ order: number; value: number }> = [];
 
         for (const { code: winningCode, order } of winningCodesWithOrder) {
-            if (!winningCode.endsWith(playedCode)) continue;
+            if (!winningCodeMatchesPlayedCode(winningCode, playedCode)) continue;
 
             const multiplier = isSuper4
                 ? (MULTIPLIERS.SUPER4 as any)[codeLength] ?? 0
