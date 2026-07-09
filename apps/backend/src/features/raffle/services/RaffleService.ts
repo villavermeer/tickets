@@ -912,6 +912,8 @@ export class RaffleService extends Service implements IRaffleService {
                         type: BalanceActionType.CORRECTION,
                         amount: action.amount,
                         reference: reversalReference,
+                        // Backdate reversal to the raffle business day so EOD totals remain consistent
+                        created: endOfDay,
                     }
                 });
 
