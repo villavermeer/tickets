@@ -177,16 +177,8 @@ export class BalanceController extends Controller implements IBalanceController 
 
             const requestUser = Context.get("user");
 
-            // Validate permissions
-            if (requestUser.role === Role.RUNNER) {
-                throw new ValidationError("Runners cannot process payouts");
-            }
-
-            if (requestUser.role === Role.MANAGER) {
-                const isUnderManager = await this.isUserUnderManager(requestUser.id, userID);
-                if (!isUnderManager) {
-                    throw new ValidationError("You can only process payouts for users under your management");
-                }
+            if (requestUser.role !== Role.ADMIN) {
+                throw new ValidationError("Only admins can process payouts");
             }
 
             const payout = await this.balanceService.processPayout(userID, amount, reference, created);
@@ -209,12 +201,8 @@ export class BalanceController extends Controller implements IBalanceController 
 
             const requestUser = Context.get("user");
 
-            // Validate permissions
-            if (requestUser.role === Role.MANAGER) {
-                const isUnderManager = await this.isUserUnderManager(requestUser.id, userID);
-                if (!isUnderManager) {
-                    throw new ValidationError("You can only process corrections for users under your management");
-                }
+            if (requestUser.role !== Role.ADMIN) {
+                throw new ValidationError("Only admins can process corrections");
             }
 
             const correction = await this.balanceService.processCorrection(userID, amount, reference, created);

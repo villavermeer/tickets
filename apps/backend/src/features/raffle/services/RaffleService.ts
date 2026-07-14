@@ -24,6 +24,8 @@ export interface IRaffleService {
     find(id: number): Promise<RaffleInterface>
     date(date: Date): Promise<Array<RaffleInterface>>
     getWinningTicketsByDate(date: Date): Promise<Array<{ game: GameInterface, tickets: TicketInterface[] }>>
+    /** Reconcile PRIZE ledger rows with current winning numbers for a business day. */
+    syncPrizeLedgerForDate(date: Date): Promise<void>
 }
 
 @singleton()
@@ -94,15 +96,19 @@ export class RaffleService extends Service implements IRaffleService {
             });
         }
 
-        // After all raffles are saved, create prize balance actions for the raffle date.
-        // Provision actions are handled at ticket write time and adjusted through delta entries.
-        await this.createPrizeBalanceActions(raffleDate);
-        
-        // Clean up any orphaned prize balance actions (prizes for codes that no longer match winning codes)
-        await this.cleanupOrphanedPrizes(raffleDate);
+        await this.syncPrizeLedgerForDate(raffleDate);
 
         // Freeze EOD balances for all users with activity up to this date
         await this.freezeBalances(raffleDate);
+    }
+
+    /**
+     * Align persisted PRIZE ledger rows with current winning numbers for a business day.
+     * Appends amount deltas when prizes changed after a raffle correction, and reverses orphans.
+     */
+    public async syncPrizeLedgerForDate(date: Date): Promise<void> {
+        await this.createPrizeBalanceActions(date);
+        await this.cleanupOrphanedPrizes(date);
     }
 
     public async all() {
@@ -595,6 +601,8 @@ export class RaffleService extends Service implements IRaffleService {
         }
 
         const processedReferences = new Set<string>();
+        const affectedUserIDs = new Set<number>();
+        const calendarDateYmd = amsterdamDate.toFormat('yyyy-MM-dd');
 
         // Process each game's winning tickets
         for (const [gameID, { winningCodes, raffleIDs }] of winningCodesByGame) {
@@ -674,29 +682,40 @@ export class RaffleService extends Service implements IRaffleService {
                     }
 
                     if (existingPrize) {
-                        if (existingPrize.amount !== -prizeAmount) {
-                            console.warn(`Prize action ${existingPrize.id} for ticket ${ticket.id}, code ${firstInstance.code} has mismatched amount (${existingPrize.amount / 100} vs ${prizeAmount / 100})`);
+                        const prizeAgg = await this.db.balanceAction.aggregate({
+                            where: {
+                                type: BalanceActionType.PRIZE,
+                                reference,
+                            },
+                            _sum: { amount: true },
+                        });
+                        const existingTotal = prizeAgg._sum.amount ?? 0;
+                        const desiredTotal = -prizeAmount;
+                        const prizeDelta = desiredTotal - existingTotal;
+
+                        if (prizeDelta !== 0) {
+                            const balance = await this.getOrCreateBalance(ticket.creator.id);
+                            await this.appendPrizeLedgerDelta(
+                                balance.id,
+                                reference,
+                                prizeDelta,
+                                endOfDay
+                            );
+                            affectedUserIDs.add(ticket.creator.id);
+                            console.debug(
+                                `Appended prize delta for ticket ${ticket.id}, code ${firstInstance.code}: ${prizeDelta / 100} EUR (ledger ${existingTotal / 100} -> ${desiredTotal / 100} EUR)`
+                            );
                         } else {
-                            console.debug(`Prize action already exists for ticket ${ticket.id}, code ${firstInstance.code}, amount: ${existingPrize.amount / 100} EUR`);
+                            console.debug(`Prize already in sync for ticket ${ticket.id}, code ${firstInstance.code}, amount: ${prizeAmount / 100} EUR`);
                         }
+
+                        processedReferences.add(reference);
                         continue;
                     }
 
                     console.debug(`Creating prize action for ticket ${ticket.id}, code ${firstInstance.code} (${codeInstances.length} instances, total stake: ${totalStake / 100} EUR), amount: ${prizeAmount / 100} EUR, user: ${ticket.creator.id}`);
 
-                    // Get or create balance for the user
-                    let balance = await this.db.balance.findUnique({
-                        where: { userID: ticket.creator.id }
-                    });
-
-                    if (!balance) {
-                        balance = await this.db.balance.create({
-                            data: {
-                                userID: ticket.creator.id,
-                                balance: 0
-                            }
-                        });
-                    }
+                    const balance = await this.getOrCreateBalance(ticket.creator.id);
 
                     // Create prize balance action (negative amount to add to balance)
                     await this.db.balanceAction.create({
@@ -710,6 +729,7 @@ export class RaffleService extends Service implements IRaffleService {
                     });
 
                     processedReferences.add(reference);
+                    affectedUserIDs.add(ticket.creator.id);
 
                     // Update balance (add the prize amount)
                     await this.db.balance.update({
@@ -724,7 +744,60 @@ export class RaffleService extends Service implements IRaffleService {
             }
         }
 
+        if (affectedUserIDs.size > 0) {
+            for (const userID of affectedUserIDs) {
+                await this.balanceService.refreshFrozenBalanceChainFromDay(userID, calendarDateYmd);
+            }
+        }
+
         console.debug('Completed creating prize balance actions');
+    }
+
+    private async getOrCreateBalance(userID: number) {
+        let balance = await this.db.balance.findUnique({
+            where: { userID },
+        });
+
+        if (!balance) {
+            balance = await this.db.balance.create({
+                data: {
+                    userID,
+                    balance: 0,
+                },
+            });
+        }
+
+        return balance;
+    }
+
+    /**
+     * Append a PRIZE ledger delta for an existing reference.
+     * Balance impact mirrors initial prize rows: increment = -amount.
+     */
+    private async appendPrizeLedgerDelta(
+        balanceID: number,
+        reference: string,
+        prizeDelta: number,
+        created: Date
+    ): Promise<void> {
+        await this.db.$transaction(async (tx) => {
+            await tx.balanceAction.create({
+                data: {
+                    balanceID,
+                    type: BalanceActionType.PRIZE,
+                    amount: prizeDelta,
+                    reference,
+                    created,
+                },
+            });
+
+            await tx.balance.update({
+                where: { id: balanceID },
+                data: {
+                    balance: { increment: -prizeDelta },
+                },
+            });
+        });
     }
 
     /**
@@ -960,7 +1033,7 @@ export class RaffleService extends Service implements IRaffleService {
     /**
      * Calculate prize amount using the same logic as PrizeService
      */
-    private calculatePrizeAmount(
+    public calculatePrizeAmount(
         playedCode: string,
         stakeValue: number,
         gameID: number,

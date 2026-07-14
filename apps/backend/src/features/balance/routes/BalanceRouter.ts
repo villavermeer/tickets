@@ -60,17 +60,19 @@ export class BalanceRouter implements IBalanceRouter {
             balanceController.getBalanceDayTotals
         );
         
-        // Process payout (admins and managers)
+        // Process payout (admins only)
         this.router.post(
             "/:userID/payout",
             Authorized,
+            HasRole(Role.ADMIN),
             balanceController.processPayout
         );
         
-        // Process correction (admins and managers)
+        // Process correction (admins only)
         this.router.post(
             "/:userID/correction",
             Authorized,
+            HasRole(Role.ADMIN),
             balanceController.processCorrection
         );
             
