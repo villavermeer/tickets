@@ -26,6 +26,8 @@ export interface IRaffleService {
     getWinningTicketsByDate(date: Date): Promise<Array<{ game: GameInterface, tickets: TicketInterface[] }>>
     /** Reconcile PRIZE ledger rows with current winning numbers for a business day. */
     syncPrizeLedgerForDate(date: Date): Promise<void>
+    /** Re-sync prizes + frozen balances for an Amsterdam calendar day (YYYY-MM-DD). */
+    resyncPrizesForCalendarDate(calendarDateYmd: string): Promise<void>
 }
 
 @singleton()
@@ -109,6 +111,117 @@ export class RaffleService extends Service implements IRaffleService {
     public async syncPrizeLedgerForDate(date: Date): Promise<void> {
         await this.createPrizeBalanceActions(date);
         await this.cleanupOrphanedPrizes(date);
+    }
+
+    public async resyncPrizesForCalendarDate(calendarDateYmd: string): Promise<void> {
+        const parsed = DateTime.fromFormat(calendarDateYmd, "yyyy-MM-dd", { zone: "Europe/Amsterdam" });
+        if (!parsed.isValid) {
+            throw new EntityNotFoundError("Date");
+        }
+        const date = parsed.startOf("day").toUTC().toJSDate();
+        await this.syncPrizeLedgerForDate(date);
+        await this.freezeBalances(date);
+    }
+
+    /**
+     * Expected prize in cents for a stable PRIZE reference under current winning numbers
+     * on the ticket's Amsterdam business day (not the raffle id embedded in the reference).
+     */
+    public async getExpectedPrizeCentsForReference(reference: string): Promise<number> {
+        const refParts = reference.split(":");
+        if (refParts.length !== 4 || refParts[0] !== "PRIZE") {
+            return 0;
+        }
+
+        const raffleID = Number(refParts[1]);
+        const ticketID = Number(refParts[2]);
+        const playedCode = refParts[3];
+        if (!Number.isFinite(raffleID) || !Number.isFinite(ticketID) || !playedCode) {
+            return 0;
+        }
+
+        const raffle = await this.db.raffle.findUnique({
+            where: { id: raffleID },
+            select: { gameID: true },
+        });
+        if (!raffle) return 0;
+
+        const ticket = await this.db.ticket.findUnique({
+            where: { id: ticketID },
+            include: {
+                codes: { select: { code: true, value: true } },
+                games: { select: { gameID: true } },
+            },
+        });
+        if (!ticket || !ticket.games.some((g) => g.gameID === raffle.gameID)) {
+            return 0;
+        }
+
+        const ticketBusinessDay = DateTime.fromJSDate(ticket.created)
+            .setZone("Europe/Amsterdam")
+            .toFormat("yyyy-MM-dd");
+
+        const winningCodes = await this.buildWinningCodesForGameOnCalendarDay(
+            raffle.gameID,
+            ticketBusinessDay
+        );
+        if (winningCodes.length === 0) {
+            return 0;
+        }
+
+        const winningCodeStrings = winningCodes.map((wc) => wc.code);
+        if (!playedCodeMatchesWinningSuffixes(playedCode, winningCodeStrings)) {
+            return 0;
+        }
+
+        let total = 0;
+        for (const row of ticket.codes) {
+            if (row.code !== playedCode) continue;
+            total += this.calculatePrizeAmount(playedCode, row.value, raffle.gameID, winningCodes);
+        }
+
+        return total;
+    }
+
+    private async buildWinningCodesForGameOnCalendarDay(
+        gameID: number,
+        calendarDateYmd: string
+    ): Promise<Array<{ code: string; order: number }>> {
+        const parsed = DateTime.fromFormat(calendarDateYmd, "yyyy-MM-dd", { zone: "Europe/Amsterdam" });
+        if (!parsed.isValid) return [];
+
+        const startOfDay = parsed.startOf("day").toUTC().toJSDate();
+        const endOfDay = parsed.endOf("day").toUTC().toJSDate();
+
+        const dayRaffles = await this.db.raffle.findMany({
+            where: {
+                created: { gte: startOfDay, lte: endOfDay },
+                gameID,
+            },
+            include: { codes: true },
+        });
+
+        const winningCodes: Array<{ code: string; order: number }> = [];
+        const codeToOrder = new Map<string, number>();
+        for (const r of dayRaffles) {
+            for (const code of r.codes) {
+                if (!codeToOrder.has(code.code)) {
+                    codeToOrder.set(code.code, codeToOrder.size + 1);
+                }
+                if (!winningCodes.some((wc) => wc.code === code.code)) {
+                    winningCodes.push({ code: code.code, order: codeToOrder.get(code.code)! });
+                }
+            }
+        }
+
+        return winningCodes;
+    }
+
+    /**
+     * Stable reference-level reversal so save()/resync can run repeatedly without duplicates.
+     */
+    private reversalReferenceForPrizeReference(reference: string): string {
+        return `REVERSAL_PRIZE_REF:${reference}`;
     }
 
     public async all() {
@@ -641,7 +754,7 @@ export class RaffleService extends Service implements IRaffleService {
                     codesByString.get(codeStr)!.push(ticketCode);
                 }
 
-                // Process each unique code (summing prizes for duplicates)
+                // Process each unique code (PrizeService-aligned: per row, then summed per reference)
                 for (const [codeStr, codeInstances] of codesByString) {
                     const orderedInstances = [...codeInstances].sort((a, b) => a.id - b.id);
 
@@ -650,16 +763,16 @@ export class RaffleService extends Service implements IRaffleService {
                         continue;
                     }
 
-                    const totalStake = orderedInstances.reduce((sum, instance) => sum + instance.value, 0);
-
-                    // Calculate prize for this code using total stake
                     const firstInstance = orderedInstances[0];
-                    const prizeAmount = this.calculatePrizeAmount(
-                        firstInstance.code,
-                        totalStake,
-                        gameID,
-                        winningCodes
-                    );
+                    let prizeAmount = 0;
+                    for (const instance of orderedInstances) {
+                        prizeAmount += this.calculatePrizeAmount(
+                            instance.code,
+                            instance.value,
+                            gameID,
+                            winningCodes
+                        );
+                    }
 
                     if (prizeAmount <= 0) continue;
 
@@ -713,7 +826,7 @@ export class RaffleService extends Service implements IRaffleService {
                         continue;
                     }
 
-                    console.debug(`Creating prize action for ticket ${ticket.id}, code ${firstInstance.code} (${codeInstances.length} instances, total stake: ${totalStake / 100} EUR), amount: ${prizeAmount / 100} EUR, user: ${ticket.creator.id}`);
+                    console.debug(`Creating prize action for ticket ${ticket.id}, code ${firstInstance.code} (${codeInstances.length} instances), amount: ${prizeAmount / 100} EUR, user: ${ticket.creator.id}`);
 
                     const balance = await this.getOrCreateBalance(ticket.creator.id);
 
@@ -863,150 +976,93 @@ export class RaffleService extends Service implements IRaffleService {
         console.debug(`Cleaning up orphaned prizes for date: ${date.toISOString()}`);
 
         const amsterdamDate = DateTime.fromJSDate(date).setZone('Europe/Amsterdam');
-        const startOfDay = amsterdamDate.startOf('day').toUTC().toJSDate();
         const endOfDay = amsterdamDate.endOf('day').toUTC().toJSDate();
         const calendarDateYmd = amsterdamDate.toFormat('yyyy-MM-dd');
 
-        // Get all raffles for this date
-        const raffles = await this.db.raffle.findMany({
-            where: {
-                created: { gte: startOfDay, lte: endOfDay }
-            },
-            include: {
-                codes: true
-            }
-        });
+        // Load PRIZE rows for tickets whose Amsterdam business day is this date
+        const ticketRows = await this.db.$queryRaw<Array<{ id: number }>>`
+            SELECT id FROM tickets
+            WHERE (timezone('Europe/Amsterdam', created))::date = CAST(${calendarDateYmd} AS DATE)
+        `;
+        const ticketIds = new Set(ticketRows.map((r) => r.id));
 
-        if (raffles.length === 0) {
-            console.debug('No raffles found for this date');
+        if (ticketIds.size === 0) {
+            console.debug('No tickets on this business day');
             return;
         }
 
-        const raffleIds = raffles.map(r => r.id);
-
-        // Build winning codes by game (same logic as createPrizeBalanceActions)
-        const winningCodesByGame = new Map<number, {
-            winningCodes: Array<{ code: string; order: number }>;
-            raffleIDs: number[];
-        }>();
-
-        for (const raffle of raffles) {
-            if (!winningCodesByGame.has(raffle.gameID)) {
-                winningCodesByGame.set(raffle.gameID, {
-                    winningCodes: [],
-                    raffleIDs: []
-                });
-            }
-
-            const gameData = winningCodesByGame.get(raffle.gameID)!;
-            if (!gameData.raffleIDs.includes(raffle.id)) {
-                gameData.raffleIDs.push(raffle.id);
-            }
-
-            const codeToOrder = new Map<string, number>();
-            for (const code of raffle.codes) {
-                if (!codeToOrder.has(code.code)) {
-                    codeToOrder.set(code.code, codeToOrder.size + 1);
-                }
-                if (!gameData.winningCodes.some(wc => wc.code === code.code)) {
-                    gameData.winningCodes.push({
-                        code: code.code,
-                        order: codeToOrder.get(code.code)!
-                    });
-                }
-            }
-        }
-
-        // Only load prize actions for raffles on this business day
-        const prizeActions = await this.db.balanceAction.findMany({
+        const allPrizeActions = await this.db.balanceAction.findMany({
             where: {
                 type: BalanceActionType.PRIZE,
-                OR: raffleIds.map((raffleId) => ({
-                    reference: { startsWith: `PRIZE:${raffleId}:` },
-                })),
+                reference: { startsWith: "PRIZE:" },
             },
         });
+
+        const prizeActions = allPrizeActions.filter((action) => {
+            const parts = action.reference?.split(":");
+            if (!parts || parts.length !== 4) return false;
+            const ticketID = Number(parts[2]);
+            return Number.isFinite(ticketID) && ticketIds.has(ticketID);
+        });
+
+        if (prizeActions.length === 0) {
+            console.debug('No prize ledger rows for tickets on this business day');
+            return;
+        }
+
+        const ledgerByReference = new Map<
+            string,
+            { balanceID: number; totalAmount: number }
+        >();
+        for (const action of prizeActions) {
+            const ref = action.reference ?? "";
+            if (!ref.startsWith("PRIZE:")) continue;
+            const existing = ledgerByReference.get(ref);
+            ledgerByReference.set(ref, {
+                balanceID: action.balanceID,
+                totalAmount: (existing?.totalAmount ?? 0) + action.amount,
+            });
+        }
 
         let orphansDeleted = 0;
         const affectedUserIDs = new Set<number>();
 
-        for (const action of prizeActions) {
-            const refParts = action.reference?.split(':');
-            if (!refParts || refParts.length !== 4 || refParts[0] !== 'PRIZE') continue;
+        for (const [reference, ledger] of ledgerByReference) {
+            const expectedCents = await this.getExpectedPrizeCentsForReference(reference);
+            const desiredLedgerTotal = -expectedCents;
+            const drift = desiredLedgerTotal - ledger.totalAmount;
 
-            const actionRaffleId = parseInt(refParts[1], 10);
-            const actionCode = refParts[3];
+            if (drift === 0) continue;
 
-            if (!raffleIds.includes(actionRaffleId)) continue;
-
-            const raffle = raffles.find(r => r.id === actionRaffleId);
-            if (!raffle) continue;
-
-            const gameData = winningCodesByGame.get(raffle.gameID);
-            if (!gameData) continue;
-
-            const reversalReference = this.reversalReferenceForPrize(action.id);
-
-            const existingReversal = await this.db.balanceAction.findFirst({
-                where: {
-                    balanceID: action.balanceID,
-                    type: BalanceActionType.CORRECTION,
-                    reference: reversalReference,
-                },
-                select: { id: true },
-            });
-            if (existingReversal) {
-                continue;
-            }
-
-            const stillValid = await this.isPrizeActionStillValid(
-                action,
-                raffle.gameID,
-                gameData.winningCodes
-            );
-            if (stillValid) {
-                continue;
-            }
-
-            console.debug(
-                `Reversing orphaned prize action ${action.id} (${action.reference}) - code "${actionCode}" no longer wins`
+            await this.appendPrizeLedgerDelta(
+                ledger.balanceID,
+                reference,
+                drift,
+                endOfDay
             );
 
-            const prizeAmount = -action.amount;
             const balanceRow = await this.db.balance.findUnique({
-                where: { id: action.balanceID },
+                where: { id: ledger.balanceID },
                 select: { userID: true },
             });
-
-            await this.db.$transaction(async (tx) => {
-                await tx.balanceAction.create({
-                    data: {
-                        balanceID: action.balanceID,
-                        type: BalanceActionType.CORRECTION,
-                        amount: action.amount,
-                        reference: reversalReference,
-                        // Backdate reversal to the raffle business day so EOD totals remain consistent
-                        created: endOfDay,
-                    }
-                });
-
-                await tx.balance.update({
-                    where: { id: action.balanceID },
-                    data: {
-                        balance: { decrement: prizeAmount }
-                    }
-                });
-            });
-
             if (balanceRow?.userID) {
                 affectedUserIDs.add(balanceRow.userID);
             }
 
-            orphansDeleted++;
+            if (expectedCents === 0) {
+                orphansDeleted++;
+                console.debug(
+                    `Zeroed orphaned prize reference ${reference} (ledger ${ledger.totalAmount / 100} EUR -> 0)`
+                );
+            } else {
+                console.debug(
+                    `Adjusted drift for ${reference}: delta ${drift / 100} EUR (ledger ${ledger.totalAmount / 100} -> ${desiredLedgerTotal / 100} EUR)`
+                );
+            }
         }
 
-        if (orphansDeleted > 0) {
-            console.debug(`Reversed ${orphansDeleted} orphaned prize balance actions`);
+        if (orphansDeleted > 0 || affectedUserIDs.size > 0) {
+            console.debug(`Prize ledger sync adjusted ${orphansDeleted} orphan reference(s)`);
             for (const userID of affectedUserIDs) {
                 await this.balanceService.refreshFrozenBalanceChainFromDay(userID, calendarDateYmd);
             }
