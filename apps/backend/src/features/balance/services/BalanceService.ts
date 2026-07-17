@@ -140,27 +140,11 @@ export class BalanceService extends Service implements IBalanceService {
     }
 
     public async processPayout(userID: number, amount: number, reference?: string, created?: Date): Promise<BalanceAction> {
-        // Allow both positive and negative payouts
-        // Positive payout = money going out (decrease balance)
-        // Negative payout = money coming in (increase balance)
-        const payoutAmount = amount > 0 ? -amount : amount;
-
-        const balance = await this.db.balance.findUnique({
-            where: { userID }
-        });
-
-        if (!balance) {
-            throw new ValidationError("User balance not found");
-        }
-
-        // Check if payout would result in negative balance (only for positive payouts)
-        if (amount > 0 && balance.balance < amount) {
-            throw new ValidationError("Insufficient balance for payout");
-        }
-
+        // Store and apply the signed amount as entered (same as corrections).
+        // Positive payout increases balance; negative payout decreases balance.
         return await this.addBalanceAction(userID, {
             type: BalanceActionType.PAYOUT,
-            amount: payoutAmount,
+            amount,
             reference,
             created: created ? new Date(created) : undefined,
         });
@@ -612,6 +596,11 @@ export class BalanceService extends Service implements IBalanceService {
                 case BalanceActionType.TICKET_SALE:
                     break;
                 case BalanceActionType.CORRECTION:
+                    // Ticket deletions already drop out of live Inleg. Counting REVERSAL_TICKET_SALE
+                    // here would subtract the same stake twice (and invent a "correctie" the PO never booked).
+                    if (a.reference?.startsWith("REVERSAL_TICKET_SALE")) {
+                        break;
+                    }
                     correction += a.amount;
                     break;
                 case BalanceActionType.PAYOUT:
@@ -881,7 +870,8 @@ export class BalanceService extends Service implements IBalanceService {
 
         switch (actionType) {
             case BalanceActionType.PAYOUT:
-                updateData.balance = { decrement: Math.abs(amount) };
+                // Signed amount: positive increases balance, negative decreases it
+                updateData.balance = { increment: amount };
                 break;
             case BalanceActionType.PRIZE:
                 updateData.balance = { increment: Math.abs(amount) };
