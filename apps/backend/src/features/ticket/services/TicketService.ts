@@ -62,6 +62,11 @@ export class TicketService extends Service implements ITicketService {
         }
     }
 
+    /** Per-code global daily overrides: `${gameID}:${code}` → limit in cents */
+    private SPECIAL_GLOBAL_CODE_LIMITS: Record<string, number> = {
+        '7:2929': 100, // Super 4 / 2929: max €1 total across all players per day
+    }
+
     constructor(
         @inject(RaffleService) protected raffleService: RaffleService
     ) {
@@ -2272,7 +2277,8 @@ export class TicketService extends Service implements ITicketService {
 
             for (const gameID of uniqueGameIds) {
                 const category: 'DEFAULT' | 'SUPER4' = gameID === 7 ? 'SUPER4' : 'DEFAULT';
-                const globalLimit = getLimit('GLOBAL', category, codeLength);
+                const specialGlobalLimit = this.SPECIAL_GLOBAL_CODE_LIMITS[`${gameID}:${codeString}`];
+                const globalLimit = specialGlobalLimit ?? getLimit('GLOBAL', category, codeLength);
                 const userLimit = getLimit('USER', category, codeLength);
 
                 if (!globalLimit && !userLimit) {
