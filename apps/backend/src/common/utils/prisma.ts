@@ -349,6 +349,12 @@ basePrisma.$use(async (params: Prisma.MiddlewareParams, next: (params: Prisma.Mi
 
                 if (!raffle) continue;
 
+                // Only award tickets from the raffle's Amsterdam business day.
+                // Without this filter, historical tickets with the same code get paid out.
+                const raffleDay = DateTime.fromJSDate(raffle.created).setZone('Europe/Amsterdam');
+                const dayStartUtc = raffleDay.startOf('day').toUTC().toJSDate();
+                const dayEndUtc = raffleDay.endOf('day').toUTC().toJSDate();
+
                 // Build winning codes with order (1-based index)
                 const winningCodesWithOrder: Array<{ code: string; order: number }> = [];
                 const codeToOrder = new Map<string, number>();
@@ -369,7 +375,10 @@ basePrisma.$use(async (params: Prisma.MiddlewareParams, next: (params: Prisma.Mi
                             code: { in: Array.from(codes) },
                             raffleID: null,
                             ticketID: { not: null },
-                            ticket: { games: { some: { gameID: raffle.gameID } } },
+                            ticket: {
+                                created: { gte: dayStartUtc, lte: dayEndUtc },
+                                games: { some: { gameID: raffle.gameID } },
+                            },
                         },
                         select: {
                             code: true,
@@ -440,7 +449,8 @@ basePrisma.$use(async (params: Prisma.MiddlewareParams, next: (params: Prisma.Mi
                                 type: BalanceActionType.PRIZE,
                                 amount: -prizeAmount,
                                 reference,
-                                created: ticket.created, // Backdate to match ticket creation date
+                                // Date to raffle EOD so the prize lands on the raffle business day
+                                created: dayEndUtc,
                             },
                         },
                     });

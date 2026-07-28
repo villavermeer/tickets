@@ -13,6 +13,7 @@ import { DateTime } from "luxon";
 import PDFDocument from "pdfkit";
 import { IPrizeService } from "../../prize/services/PrizeService";
 import { RaffleService } from "../../raffle/services/RaffleService";
+import { BalanceService } from "../../balance/services/BalanceService";
 import { isGameUnavailableForDate } from "../../game/utils/gameAvailability";
 import { isTicketSubmissionClosed, ticketSubmissionClosedMessage } from "../utils/submissionStatus";
 
@@ -1149,17 +1150,17 @@ export class TicketService extends Service implements ITicketService {
         const startDate = this.parseDateParameter(start, true);
         const endDate = this.parseDateParameter(end, false);
 
-        // Calculate day boundaries for the end date (in Amsterdam timezone)
-        // This is needed to include prizes/corrections created the next day that relate to the selected day
-        const endDateAmsterdam = DateTime.fromJSDate(endDate).setZone('Europe/Amsterdam');
-        const endDateDayStart = endDateAmsterdam.startOf('day').toUTC().toJSDate();
-        const endDateDayEnd = endDateAmsterdam.endOf('day').toUTC().toJSDate();
+        // Use Amsterdam calendar days so export matches the in-app saldo day view.
+        let startDay = DateTime.fromJSDate(startDate).setZone('Europe/Amsterdam').startOf('day');
+        let endDay = DateTime.fromJSDate(endDate).setZone('Europe/Amsterdam').startOf('day');
+        if (endDay < startDay) {
+            const tmp = startDay;
+            startDay = endDay;
+            endDay = tmp;
+        }
 
-        // Extend endDate by 24 hours to catch prizes/corrections created the next day
-        const endDateExtended = new Date(endDate);
-        endDateExtended.setHours(endDateExtended.getHours() + 24);
+        const balanceService = container.resolve(BalanceService);
 
-        // Get all users (runners and managers) with their balance info
         const users = await this.db.user.findMany({
             where: {
                 role: {
@@ -1170,89 +1171,8 @@ export class TicketService extends Service implements ITicketService {
                 id: true,
                 name: true,
                 role: true,
-                commission: true,
-                balance: {
-                    select: {
-                        balance: true
-                    }
-                }
-            }
-        });
-
-        // Get all balance actions within the period
-        // For PRIZE and CORRECTION, also include actions created up to 24 hours after endDate
-        // but only if their created date falls within the day boundaries of endDate
-        const actions = await this.db.balanceAction.findMany({
-            where: {
-                OR: [
-                    // Regular actions within the period
-                    {
-                        created: {
-                            gte: startDate,
-                            lte: endDate
-                        }
-                    },
-                    // PRIZE and CORRECTION actions: include if created within endDate's day boundaries
-                    // OR created up to 24 hours after endDate (to catch late entries)
-                    {
-                        type: {
-                            in: [BalanceActionType.PRIZE, BalanceActionType.CORRECTION]
-                        },
-                        created: {
-                            gte: endDateDayStart,
-                            lte: endDateExtended
-                        }
-                    }
-                ],
-                balance: {
-                    user: {
-                        role: {
-                            in: [Role.RUNNER, Role.MANAGER]
-                        }
-                    }
-                }
             },
-            include: {
-                balance: {
-                    select: {
-                        userID: true
-                    }
-                }
-            }
-        });
-
-        // Filter actions: for PRIZE and CORRECTION created after endDate, only include if
-        // their created date falls within the day boundaries of endDate
-        // (this ensures we only include prizes/corrections that relate to the selected day)
-        const filteredActions = actions.filter(action => {
-            if ((action.type === BalanceActionType.PRIZE || action.type === BalanceActionType.CORRECTION) && action.created > endDate) {
-                // Only include if created date falls within the day boundaries of endDate
-                return action.created >= endDateDayStart && action.created <= endDateDayEnd;
-            }
-            return true;
-        });
-
-        // Get tickets for commission calculation
-        const tickets = await this.db.ticket.findMany({
-            where: {
-                created: {
-                    gte: startDate,
-                    lte: endDate
-                }
-            },
-            select: {
-                creatorID: true,
-                codes: {
-                    select: {
-                        value: true
-                    }
-                },
-                games: {
-                    select: {
-                        gameID: true
-                    }
-                }
-            }
+            orderBy: { name: 'asc' },
         });
 
         type BalanceRow = {
@@ -1267,102 +1187,62 @@ export class TicketService extends Service implements ITicketService {
             eindSaldo: number;
         };
 
-        const byUser = new Map<number, BalanceRow>();
+        const rows: BalanceRow[] = [];
 
-        // Initialize rows for all users with their previous balance
-        users.forEach((user) => {
-            // Get actions before the start date to calculate previous balance
-            const currentBalance = user.balance?.balance ?? 0;
+        for (const user of users) {
+            let vorigSaldo = 0;
+            let inleg = 0;
+            let correctie = 0;
+            let uitbetaling = 0;
+            let prijs = 0;
+            let provisie = 0;
+            let eindSaldo = 0;
+            let firstDay = true;
 
-            byUser.set(user.id, {
+            for (let cursor = startDay; cursor <= endDay; cursor = cursor.plus({ days: 1 })) {
+                const ymd = cursor.toFormat('yyyy-MM-dd');
+                const totals = await balanceService.getBalanceDayTotals(user.id, ymd);
+
+                if (firstDay) {
+                    vorigSaldo = totals.opening;
+                    firstDay = false;
+                }
+
+                inleg += totals.ticketSale;
+                correctie += totals.correction;
+                uitbetaling += totals.payout;
+                prijs += totals.prize;
+                provisie += totals.provision;
+                eindSaldo = totals.closing;
+            }
+
+            // Keep users with any opening/activity so standen exports stay complete.
+            if (
+                vorigSaldo === 0 &&
+                inleg === 0 &&
+                correctie === 0 &&
+                uitbetaling === 0 &&
+                prijs === 0 &&
+                provisie === 0 &&
+                eindSaldo === 0
+            ) {
+                continue;
+            }
+
+            rows.push({
                 name: user.name,
                 role: user.role,
-                vorigSaldo: 0, // Will be calculated
-                inleg: 0,
-                correctie: 0,
-                uitbetaling: 0,
-                prijs: 0,
-                provisie: 0,
-                eindSaldo: 0
+                vorigSaldo,
+                inleg,
+                correctie,
+                uitbetaling,
+                prijs,
+                provisie,
+                eindSaldo,
             });
-        });
-
-        // Calculate previous balance for each user (balance before the period).
-        // Prefer frozen balance snapshot when available; fall back to summing actions.
-        const prevDayAmsterdam = DateTime.fromJSDate(startDate).setZone('Europe/Amsterdam').minus({ days: 1 }).startOf('day').toUTC().toJSDate();
-        for (const [userId, row] of byUser) {
-            const frozen = await this.db.frozenBalance.findUnique({
-                where: { userID_date: { userID: userId, date: prevDayAmsterdam } }
-            });
-
-            if (frozen) {
-                row.vorigSaldo = frozen.balance;
-            } else {
-                const actionsBeforePeriod = await this.db.balanceAction.findMany({
-                    where: {
-                        created: { lt: startDate },
-                        balance: { userID: userId }
-                    }
-                });
-
-                let previousBalance = 0;
-                actionsBeforePeriod.forEach((action) => {
-                    previousBalance += action.amount;
-                });
-
-                row.vorigSaldo = previousBalance;
-            }
         }
 
-        // Process actions within the period
-        filteredActions.forEach((action) => {
-            const userId = action.balance?.userID;
-            if (!userId) {
-                return;
-            }
-
-            const entry = byUser.get(userId);
-            if (!entry) {
-                return;
-            }
-
-            switch (action.type) {
-                case BalanceActionType.TICKET_SALE:
-                    entry.inleg += action.amount;
-                    break;
-                case BalanceActionType.CORRECTION:
-                    entry.correctie += action.amount;
-                    break;
-                case BalanceActionType.PAYOUT:
-                    entry.uitbetaling += Math.abs(action.amount);
-                    break;
-                case BalanceActionType.PRIZE:
-                    entry.prijs += Math.abs(action.amount);
-                    break;
-                case BalanceActionType.PROVISION:
-                    entry.provisie += action.amount;
-                    break;
-            }
-        });
-
-        // Calculate provision from Inleg and commission percentage for each user
-        // Provision is calculated as a percentage of Inleg for the period
-        // Provision should be shown as positive in the export, but is negative for balance calculation
-        byUser.forEach((row, userId) => {
-            const user = users.find(u => u.id === userId);
-            if (user && row.inleg > 0) {
-                // Calculate provision as percentage of Inleg
-                const provisionAmount = Math.round((row.inleg * (user.commission || 0)) / 100);
-                // Always use calculated value from Inleg (not balance actions)
-                row.provisie = -provisionAmount; // Negative for balance calculation
-            }
-        });
-
-        // Calculate end balance: opening + corrections - payouts + ticket sales - prizes + provision
-        // Note: provision is negative, so adding it subtracts from balance
-        byUser.forEach((row) => {
-            row.eindSaldo = row.vorigSaldo + row.correctie - row.uitbetaling + row.inleg - row.prijs + row.provisie;
-        });
+        rows.sort((a, b) => a.name.localeCompare(b.name, 'nl'));
 
         const workbook = new ExcelJS.Workbook();
         const worksheet = workbook.addWorksheet('Saldo export');
@@ -1381,10 +1261,6 @@ export class TicketService extends Service implements ITicketService {
             { header: 'Eind saldo (€)', key: 'eindSaldo', width: 18, style: { numFmt: currencyFormat } },
         ];
 
-        const rows = Array.from(byUser.values())
-            .filter(row => row.inleg !== 0 || row.correctie !== 0 || row.uitbetaling !== 0 || row.prijs !== 0 || row.vorigSaldo !== 0)
-            .sort((a, b) => a.name.localeCompare(b.name, 'nl'));
-
         if (!rows.length) {
             worksheet.addRow({ name: 'Geen saldo acties gevonden voor de opgegeven periode.' });
         } else {
@@ -1392,13 +1268,14 @@ export class TicketService extends Service implements ITicketService {
                 worksheet.addRow({
                     name: row.name,
                     role: row.role === Role.MANAGER ? 'Manager' : 'Loper',
+                    // Same signed cents as the in-app saldo day view
                     vorigSaldo: row.vorigSaldo / 100,
                     inleg: row.inleg / 100,
                     correctie: row.correctie / 100,
                     uitbetaling: row.uitbetaling / 100,
                     prijs: row.prijs / 100,
-                    provisie: Math.abs(row.provisie) / 100, // Display as positive value
-                    eindSaldo: row.eindSaldo / 100
+                    provisie: row.provisie / 100,
+                    eindSaldo: row.eindSaldo / 100,
                 });
             });
 
@@ -1411,8 +1288,8 @@ export class TicketService extends Service implements ITicketService {
                 correctie: rows.reduce((sum, row) => sum + row.correctie, 0) / 100,
                 uitbetaling: rows.reduce((sum, row) => sum + row.uitbetaling, 0) / 100,
                 prijs: rows.reduce((sum, row) => sum + row.prijs, 0) / 100,
-                provisie: rows.reduce((sum, row) => sum + Math.abs(row.provisie), 0) / 100, // Display as positive value
-                eindSaldo: rows.reduce((sum, row) => sum + row.eindSaldo, 0) / 100
+                provisie: rows.reduce((sum, row) => sum + row.provisie, 0) / 100,
+                eindSaldo: rows.reduce((sum, row) => sum + row.eindSaldo, 0) / 100,
             });
         }
 
