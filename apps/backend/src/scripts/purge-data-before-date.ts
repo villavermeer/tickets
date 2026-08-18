@@ -178,7 +178,7 @@ async function purge(cutoff: Date, keepFrom: Date) {
     const balanceService = container.resolve(BalanceService);
     const users = await prisma.balance.findMany({ select: { userID: true } });
     for (const { userID } of users) {
-        await balanceService.refreshFrozenBalanceChainFromDay(userID, KEEP_FROM_YMD);
+        await balanceService.refreshFrozenBalanceChainFromDay(userID, KEEP_FROM_YMD, { overwriteSealed: true });
     }
     console.log(`  frozen_balances rebuilt from ${KEEP_FROM_YMD} for ${users.length} user(s)`);
 }

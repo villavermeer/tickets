@@ -83,6 +83,81 @@ async function main() {
         console.log(
             `PASS: opening(${day2Key})=${totalsDay2.opening} equals closing(${day1Key})=${totalsDay1.closing}`
         );
+
+        // Seal day1 with a frozen snapshot, then add later activity attributed to day1.
+        // Opening of day2 / closing of day1 must stay on that snapshot.
+        const sealedClosing = totalsDay1.closing + 2500;
+        await prisma.frozenBalance.upsert({
+            where: {
+                userID_date: {
+                    userID: user.id,
+                    date: day1.startOf("day").toUTC().toJSDate(),
+                },
+            },
+            update: { balance: sealedClosing },
+            create: {
+                userID: user.id,
+                date: day1.startOf("day").toUTC().toJSDate(),
+                balance: sealedClosing,
+            },
+        });
+
+        await prisma.balanceAction.create({
+            data: {
+                balanceID: balance.id,
+                type: BalanceActionType.CORRECTION,
+                amount: 999,
+                reference: "LATE_SEALED_DAY_ACTIVITY",
+                created: day1.plus({ hours: 18 }).toUTC().toJSDate(),
+            },
+        });
+
+        await service.refreshFrozenBalanceChainFromDay(user.id, day1Key);
+
+        const sealedDay1 = await service.getBalanceDayTotals(user.id, day1Key);
+        const sealedDay2 = await service.getBalanceDayTotals(user.id, day2Key);
+
+        assert.equal(
+            sealedDay1.closing,
+            sealedClosing,
+            `Sealed closing changed: ${sealedDay1.closing} !== ${sealedClosing}`
+        );
+        assert.equal(
+            sealedDay2.opening,
+            sealedDay1.closing,
+            `Sealed opening drifted: opening(${day2Key})=${sealedDay2.opening} !== closing(${day1Key})=${sealedDay1.closing}`
+        );
+
+        console.log(
+            `PASS: sealed closing(${day1Key})=${sealedDay1.closing} stays frozen; opening(${day2Key}) matches`
+        );
+
+        const yesterday = DateTime.now().setZone("Europe/Amsterdam").minus({ days: 1 }).startOf("day");
+        const today = yesterday.plus({ days: 1 });
+        await prisma.frozenBalance.upsert({
+            where: {
+                userID_date: {
+                    userID: user.id,
+                    date: yesterday.startOf("day").toUTC().toJSDate(),
+                },
+            },
+            update: { balance: 12345 },
+            create: {
+                userID: user.id,
+                date: yesterday.startOf("day").toUTC().toJSDate(),
+                balance: 12345,
+            },
+        });
+        const yTotals = await service.getBalanceDayTotals(user.id, yesterday.toFormat("yyyy-MM-dd"));
+        const tTotals = await service.getBalanceDayTotals(user.id, today.toFormat("yyyy-MM-dd"));
+        assert.equal(
+            tTotals.opening,
+            yTotals.closing,
+            `Yesterday live close must equal today open even with stale freeze (${tTotals.opening} !== ${yTotals.closing})`
+        );
+        console.log(
+            `PASS: today open=${tTotals.opening} equals yesterday close=${yTotals.closing} despite stale freeze 12345`
+        );
     } finally {
         if (testUserID !== null) {
             await prisma.user.delete({ where: { id: testUserID } });

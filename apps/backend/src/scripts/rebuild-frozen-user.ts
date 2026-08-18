@@ -30,7 +30,7 @@ async function main() {
             where: { id: userID },
             select: { name: true },
         });
-        await balanceService.refreshFrozenBalanceChainFromDay(userID, startYmd);
+        await balanceService.refreshFrozenBalanceChainFromDay(userID, startYmd, { overwriteSealed: true });
         console.log(`  ${user?.name ?? "user"} (${userID}): done`);
     }
 

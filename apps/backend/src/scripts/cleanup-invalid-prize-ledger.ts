@@ -113,7 +113,7 @@ async function main() {
         });
         const bal = await prisma.balance.findUnique({ where: { id: balanceID } });
         if (bal) {
-            await balanceService.refreshFrozenBalanceChainFromDay(bal.userID, REBUILD_FROM);
+            await balanceService.refreshFrozenBalanceChainFromDay(bal.userID, REBUILD_FROM, { overwriteSealed: true });
         }
     }
 

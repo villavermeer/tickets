@@ -156,7 +156,7 @@ async function main() {
     const balanceService = container.resolve(BalanceService);
 
     for (const userID of affectedUserIDs) {
-        await balanceService.refreshFrozenBalanceChainFromDay(userID, REBUILD_FROM);
+        await balanceService.refreshFrozenBalanceChainFromDay(userID, REBUILD_FROM, { overwriteSealed: true });
     }
     console.log(`Rebuilt frozen chains for ${affectedUserIDs.length} user(s).`);
 }

@@ -276,7 +276,7 @@ async function main() {
     console.log(`\n=== Rebuild frozen chains from ${REBUILD_FROM} ===`);
     const balances = await prisma.balance.findMany({ select: { userID: true } });
     for (const { userID } of balances) {
-        await balanceService.refreshFrozenBalanceChainFromDay(userID, REBUILD_FROM);
+        await balanceService.refreshFrozenBalanceChainFromDay(userID, REBUILD_FROM, { overwriteSealed: true });
     }
     console.log(`Rebuilt ${balances.length} user chain(s)`);
 

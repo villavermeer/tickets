@@ -123,7 +123,7 @@ async function cleanupCeliesBogusPrizes(balanceService: BalanceService): Promise
         where: { id: { in: bogus.map((b) => b.id) } },
     });
     await recalcBalanceByBalanceID(balance.id);
-    await balanceService.refreshFrozenBalanceChainFromDay(celies.id, "2026-06-27");
+    await balanceService.refreshFrozenBalanceChainFromDay(celies.id, "2026-06-27", { overwriteSealed: true });
     console.log("Deleted bogus Celies prize rows and rebuilt chain from 2026-06-27.");
     return bogus.length;
 }
@@ -183,7 +183,7 @@ async function applyJul7BaselineAndRebuild(balanceService: BalanceService): Prom
                 create: { userID: user.id, date: baselineUtc, balance: row.cents },
             });
 
-            await balanceService.refreshFrozenBalanceChainFromDay(user.id, REBUILD_FROM);
+            await balanceService.refreshFrozenBalanceChainFromDay(user.id, REBUILD_FROM, { overwriteSealed: true });
             updated++;
         }
     }

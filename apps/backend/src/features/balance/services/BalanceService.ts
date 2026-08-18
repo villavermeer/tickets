@@ -18,6 +18,11 @@ export interface BalanceDayTotalsResult {
     closing: number;
 }
 
+export interface FrozenChainRefreshOptions {
+    /** When true, rewrite frozen rows for sealed historical days. Default false. */
+    overwriteSealed?: boolean;
+}
+
 export interface IBalanceService {
     getUserBalance(userID: number): Promise<BalanceWithActions>;
     addBalanceAction(userID: number, action: CreateBalanceActionRequest): Promise<BalanceAction>;
@@ -27,7 +32,11 @@ export interface IBalanceService {
     getBalanceHistory(userID: number, startDate?: Date, endDate?: Date): Promise<BalanceAction[]>;
     getFrozenBalance(userID: number, date: Date): Promise<number | null>;
     getBalanceDayTotals(userID: number, calendarDateYmd: string): Promise<BalanceDayTotalsResult>;
-    refreshFrozenBalanceChainFromDay(userID: number, calendarDateYmd: string): Promise<void>;
+    refreshFrozenBalanceChainFromDay(
+        userID: number,
+        calendarDateYmd: string,
+        options?: FrozenChainRefreshOptions
+    ): Promise<void>;
     refreshFrozenBalancesForCalendarDay(calendarDateYmd: string): Promise<void>;
     updateBalanceAction(actionID: number, updates: Partial<CreateBalanceActionRequest>): Promise<BalanceAction>;
     deleteBalanceAction(actionID: number): Promise<void>;
@@ -133,7 +142,8 @@ export class BalanceService extends Service implements IBalanceService {
         this.invalidateUserDayTotalsCache(userID);
         await this.refreshFrozenBalanceChainFromDay(
             userID,
-            this.calendarDateYmdFromDate(action.created ? new Date(action.created) : new Date())
+            this.calendarDateYmdFromDate(action.created ? new Date(action.created) : new Date()),
+            { overwriteSealed: true }
         );
 
         return this.formatBalanceAction(balanceAction);
@@ -179,7 +189,8 @@ export class BalanceService extends Service implements IBalanceService {
         this.invalidateUserDayTotalsCache(userID);
         await this.refreshFrozenBalanceChainFromDay(
             userID,
-            this.calendarDateYmdFromDate(created ? new Date(created) : new Date())
+            this.calendarDateYmdFromDate(created ? new Date(created) : new Date()),
+            { overwriteSealed: true }
         );
 
         return this.formatBalanceAction(balanceAction);
@@ -226,15 +237,22 @@ export class BalanceService extends Service implements IBalanceService {
 
     /**
      * Rebuild frozen EOD snapshots from a calendar day through today.
-     * Rolls forward sequentially so each day's frozen row matches opening + day activity.
+     * Sealed days (before yesterday) keep their frozen closing unless overwriteSealed.
+     * Yesterday and today stay writable so morning raffle freeze can still land.
      */
-    public async refreshFrozenBalanceChainFromDay(userID: number, calendarDateYmd: string): Promise<void> {
+    public async refreshFrozenBalanceChainFromDay(
+        userID: number,
+        calendarDateYmd: string,
+        options?: FrozenChainRefreshOptions
+    ): Promise<void> {
         const start = DateTime.fromFormat(calendarDateYmd, "yyyy-MM-dd", { zone: "Europe/Amsterdam" });
         if (!start.isValid) {
             throw new ValidationError("Invalid date; use YYYY-MM-DD");
         }
 
+        const overwriteSealed = options?.overwriteSealed === true;
         const end = DateTime.now().setZone("Europe/Amsterdam").startOf("day");
+        const sealBefore = end.minus({ days: 1 });
         let cursor = start.startOf("day");
 
         this.invalidateUserDayTotalsCache(userID);
@@ -247,9 +265,18 @@ export class BalanceService extends Service implements IBalanceService {
 
         while (cursor <= end) {
             const dayYmd = cursor.toFormat("yyyy-MM-dd");
+            const startOfDayUtc = cursor.startOf("day").toUTC().toJSDate();
+            const existing = await this.getFrozenBalance(userID, startOfDayUtc);
+            const isSealed = cursor < sealBefore;
+
+            if (isSealed && existing !== null && !overwriteSealed) {
+                opening = existing;
+                cursor = cursor.plus({ days: 1 });
+                continue;
+            }
+
             const activity = await this.computeDayActivity(userID, cursor, dayYmd);
             const closing = opening + activity.dayNet;
-            const startOfDayUtc = cursor.startOf("day").toUTC().toJSDate();
 
             await this.db.frozenBalance.upsert({
                 where: { userID_date: { userID, date: startOfDayUtc } },
@@ -301,14 +328,14 @@ export class BalanceService extends Service implements IBalanceService {
     }
 
     /**
-     * Opening balance: previous day's frozen EOD snapshot when available.
-     * Frozen rows must be kept in sync via refreshFrozenBalanceChainFromDay (runs on
-     * corrections/payouts and EOD raffle freeze). Stale frozen rows break continuity.
+     * Beginstand of day D is always the displayed eindsaldo of D-1. Never a
+     * separate figure. Sealed D-1 uses the frozen snapshot (same as its screen);
+     * yesterday/today use the live closing so a stale freeze cannot diverge.
      */
     private async resolveOpeningBalance(
         userID: number,
         parsed: DateTime,
-        calendarDateYmd: string
+        _calendarDateYmd: string
     ): Promise<number> {
         const prevDay = parsed.minus({ days: 1 });
         const prevYmd = prevDay.toFormat("yyyy-MM-dd");
@@ -318,11 +345,15 @@ export class BalanceService extends Service implements IBalanceService {
             return cachedPrev.closing;
         }
 
+        const today = DateTime.now().setZone("Europe/Amsterdam").startOf("day");
+        const sealBefore = today.minus({ days: 1 });
+        const prevIsSealed = prevDay.startOf("day") < sealBefore;
         const frozenPrev = await this.getFrozenBalance(
             userID,
             prevDay.startOf("day").toUTC().toJSDate()
         );
-        if (frozenPrev !== null) {
+
+        if (prevIsSealed && frozenPrev !== null) {
             return frozenPrev;
         }
 
@@ -334,6 +365,10 @@ export class BalanceService extends Service implements IBalanceService {
                 prevYmd
             );
             return prevTotals.closing;
+        }
+
+        if (frozenPrev !== null) {
+            return frozenPrev;
         }
 
         return await this.computeAttributedSumThroughDay(userID, prevYmd);
@@ -376,7 +411,16 @@ export class BalanceService extends Service implements IBalanceService {
 
         const activity = await this.computeDayActivity(userID, parsed, calendarDateYmd);
         const opening = await this.resolveOpeningBalance(userID, parsed, calendarDateYmd);
-        const closing = opening + activity.dayNet;
+        const liveClosing = opening + activity.dayNet;
+
+        const today = DateTime.now().setZone("Europe/Amsterdam").startOf("day");
+        const sealBefore = today.minus({ days: 1 });
+        const frozenThis = await this.getFrozenBalance(
+            userID,
+            parsed.startOf("day").toUTC().toJSDate()
+        );
+        const isSealed = parsed.startOf("day") < sealBefore;
+        const closing = isSealed && frozenThis !== null ? frozenThis : liveClosing;
 
         const result: BalanceDayTotalsResult = {
             opening,
@@ -758,7 +802,8 @@ export class BalanceService extends Service implements IBalanceService {
         });
         await this.refreshFrozenBalanceChainFromDay(
             existingAction.balance.userID,
-            this.calendarDateYmdFromDate(new Date())
+            this.calendarDateYmdFromDate(new Date()),
+            { overwriteSealed: true }
         );
 
         return this.formatBalanceAction(adjustmentAction);
@@ -808,7 +853,8 @@ export class BalanceService extends Service implements IBalanceService {
         });
         await this.refreshFrozenBalanceChainFromDay(
             existingAction.balance.userID,
-            this.calendarDateYmdFromDate(existingAction.created)
+            this.calendarDateYmdFromDate(existingAction.created),
+            { overwriteSealed: true }
         );
     }
 

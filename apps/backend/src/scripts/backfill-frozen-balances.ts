@@ -43,7 +43,7 @@ async function main() {
     console.log(`Rebuilding chains from ${startYmd} for ${users.length} user(s)...\n`);
 
     for (const { userID } of users) {
-        await balanceService.refreshFrozenBalanceChainFromDay(userID, startYmd);
+        await balanceService.refreshFrozenBalanceChainFromDay(userID, startYmd, { overwriteSealed: true });
         console.log(`  user ${userID}: done`);
     }
 

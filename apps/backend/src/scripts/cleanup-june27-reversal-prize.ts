@@ -34,7 +34,7 @@ async function main() {
     container.registerInstance("Database", prisma);
     const service = container.resolve(BalanceService);
     for (const b of balances) {
-        await service.refreshFrozenBalanceChainFromDay(b.userID, "2026-06-27");
+        await service.refreshFrozenBalanceChainFromDay(b.userID, "2026-06-27", { overwriteSealed: true });
     }
     console.log(`rebuilt_frozen_chains=${balances.length}`);
 }

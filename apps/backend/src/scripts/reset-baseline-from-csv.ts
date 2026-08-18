@@ -169,7 +169,7 @@ async function main() {
     const balanceService = container.resolve(BalanceService);
     const users = await prisma.balance.findMany({ select: { userID: true } });
     for (const { userID } of users) {
-        await balanceService.refreshFrozenBalanceChainFromDay(userID, BASELINE_DAY);
+        await balanceService.refreshFrozenBalanceChainFromDay(userID, BASELINE_DAY, { overwriteSealed: true });
     }
     console.log(`  rebuilt frozen chain from ${BASELINE_DAY} for ${users.length} users`);
 

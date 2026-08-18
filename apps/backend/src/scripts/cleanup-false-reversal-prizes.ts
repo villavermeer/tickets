@@ -156,7 +156,7 @@ async function main() {
     container.registerInstance("Database", prisma);
     const balanceService = container.resolve(BalanceService);
     for (const b of balances) {
-        await balanceService.refreshFrozenBalanceChainFromDay(b.userID, REBUILD_FROM);
+        await balanceService.refreshFrozenBalanceChainFromDay(b.userID, REBUILD_FROM, { overwriteSealed: true });
     }
     console.log(`Rebuilt frozen chains from ${REBUILD_FROM}`);
 }

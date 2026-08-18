@@ -189,7 +189,7 @@ async function main() {
             });
             const bal = await prisma.balance.findUnique({ where: { id: balanceID } });
             if (bal) {
-                await balanceService.refreshFrozenBalanceChainFromDay(bal.userID, "2026-07-06");
+                await balanceService.refreshFrozenBalanceChainFromDay(bal.userID, "2026-07-06", { overwriteSealed: true });
             }
         }
         console.log(`Removed ${falseReversalIds.length} false reversal(s) and rebuilt frozen chains.`);

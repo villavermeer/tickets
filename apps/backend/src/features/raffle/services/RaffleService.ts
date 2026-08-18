@@ -1083,7 +1083,7 @@ export class RaffleService extends Service implements IRaffleService {
 
         await this.balanceService.refreshFrozenBalancesForCalendarDay(calendarDateYmd);
 
-        console.debug(`Frozen balance chain refreshed from ${calendarDateYmd} through today`);
+        console.debug(`Frozen EOD snapshot updated for ${calendarDateYmd} (sealed days left unchanged)`);
     }
 
     /**
