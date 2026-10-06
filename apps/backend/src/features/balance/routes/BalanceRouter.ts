@@ -25,6 +25,14 @@ export class BalanceRouter implements IBalanceRouter {
 
     private initializeRoutes(): void {
         const balanceController = container.resolve<IBalanceController>("BalanceController");
+
+        // Admin day overview for all runners/managers (must be before /:userID)
+        this.router.get(
+            "/day-overview",
+            Authorized,
+            HasRole(Role.ADMIN),
+            balanceController.getDayOverview
+        );
         
         this.router.get(
             "/:userID",

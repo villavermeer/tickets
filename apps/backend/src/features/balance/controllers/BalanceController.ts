@@ -14,6 +14,7 @@ export interface IBalanceController {
     getBalanceHistory(req: Request, res: Response): Promise<void>;
     getFrozenBalance(req: Request, res: Response): Promise<void>;
     getBalanceDayTotals(req: Request, res: Response): Promise<void>;
+    getDayOverview(req: Request, res: Response): Promise<void>;
     processPayout(req: Request, res: Response): Promise<void>;
     processCorrection(req: Request, res: Response): Promise<void>;
     addBalanceAction(req: Request, res: Response): Promise<void>;
@@ -161,6 +162,26 @@ export class BalanceController extends Controller implements IBalanceController 
 
             const totals = await this.balanceService.getBalanceDayTotals(userID, dateParam);
             res.status(200).json(formatSuccessResponse('DayTotals', totals));
+        } catch (error) {
+            this.handleError(error, req, res);
+        }
+    };
+
+    public getDayOverview = async (req: Request, res: Response): Promise<void> => {
+        try {
+            const dateParam = req.query.date as string | undefined;
+
+            if (!dateParam || !/^\d{4}-\d{2}-\d{2}$/.test(dateParam)) {
+                throw new ValidationError("Query parameter date is required (YYYY-MM-DD)");
+            }
+
+            const requestUser = Context.get("user");
+            if (requestUser.role !== Role.ADMIN) {
+                throw new ValidationError("Only admins can view the balance day overview");
+            }
+
+            const overview = await this.balanceService.getDayOverview(dateParam);
+            res.status(200).json(formatSuccessResponse('DayOverview', overview));
         } catch (error) {
             this.handleError(error, req, res);
         }

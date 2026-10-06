@@ -18,6 +18,15 @@ export interface BalanceDayTotalsResult {
     closing: number;
 }
 
+export interface BalanceDayOverviewItem {
+    userID: number;
+    name: string;
+    role: Role;
+    opening: number;
+    closing: number;
+    dayNet: number;
+}
+
 export interface FrozenChainRefreshOptions {
     /** When true, rewrite frozen rows for sealed historical days. Default false. */
     overwriteSealed?: boolean;
@@ -32,6 +41,7 @@ export interface IBalanceService {
     getBalanceHistory(userID: number, startDate?: Date, endDate?: Date): Promise<BalanceAction[]>;
     getFrozenBalance(userID: number, date: Date): Promise<number | null>;
     getBalanceDayTotals(userID: number, calendarDateYmd: string): Promise<BalanceDayTotalsResult>;
+    getDayOverview(calendarDateYmd: string): Promise<BalanceDayOverviewItem[]>;
     refreshFrozenBalanceChainFromDay(
         userID: number,
         calendarDateYmd: string,
@@ -399,6 +409,42 @@ export class BalanceService extends Service implements IBalanceService {
         if (cached) return cached;
 
         return this.computeBalanceDayTotalsAttributed(userID, parsed, calendarDateYmd);
+    }
+
+    /**
+     * Admin overview: day closing saldo for all runners and managers on one Amsterdam calendar day.
+     */
+    public async getDayOverview(calendarDateYmd: string): Promise<BalanceDayOverviewItem[]> {
+        const parsed = DateTime.fromFormat(calendarDateYmd, "yyyy-MM-dd", { zone: "Europe/Amsterdam" });
+        if (!parsed.isValid) {
+            throw new ValidationError("Invalid date; use YYYY-MM-DD");
+        }
+
+        const users = await this.db.user.findMany({
+            where: {
+                role: { in: [Role.RUNNER, Role.MANAGER] },
+            },
+            select: {
+                id: true,
+                name: true,
+                role: true,
+            },
+            orderBy: { name: "asc" },
+        });
+
+        const items: BalanceDayOverviewItem[] = [];
+        for (const user of users) {
+            const totals = await this.getBalanceDayTotals(user.id, calendarDateYmd);
+            items.push({
+                userID: user.id,
+                name: user.name,
+                role: user.role,
+                opening: totals.opening,
+                closing: totals.closing,
+                dayNet: totals.dayNet,
+            });
+        }
+        return items;
     }
 
     private async computeBalanceDayTotalsAttributed(

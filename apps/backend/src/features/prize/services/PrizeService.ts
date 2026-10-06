@@ -129,10 +129,9 @@ export class PrizeService extends Service implements IPrizeService {
     }> {
         const currentUser = Context.get("user");
 
-        // Compute date ranges in Amsterdam timezone
-        // Parse the date as Amsterdam timezone to avoid UTC offset issues
-        const dateStr = DateTime.fromJSDate(date).toFormat('yyyy-MM-dd');
-        const amsterdamDate = DateTime.fromISO(dateStr, { zone: 'Europe/Amsterdam' });
+        // Compute date ranges in Amsterdam timezone (never rely on server local TZ).
+        // Incoming `date` is typically Amsterdam start-of-day encoded as UTC.
+        const amsterdamDate = DateTime.fromJSDate(date, { zone: 'utc' }).setZone('Europe/Amsterdam');
         // Raffles are backdated to match ticket date when saved (see RaffleService.save)
         const dayStartUTC = amsterdamDate.startOf('day').toUTC().toJSDate();
         const dayEndUTC = amsterdamDate.endOf('day').toUTC().toJSDate();
