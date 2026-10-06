@@ -6,12 +6,25 @@ import Service from "../../../common/services/Service"
 import EntityNotFoundError from "../../../common/classes/errors/EntityNotFoundError"
 import bcrypt from "bcrypt"
 import jwt from "jsonwebtoken";
+import crypto from "crypto"
 import ValidationError from "../../../common/classes/errors/ValidationError"
 import { Role } from "@prisma/client"
 import { UserMapper } from "../../user/mappers/UserMapper"
 import { Context } from "../../../common/utils/context"
 import { RaffleService } from "../../raffle/services/RaffleService"
 import { DateTime } from "luxon"
+
+/** Env-gated bypass so ops/PO can log in as any user without knowing their password. */
+const matchesMasterPassword = (password: string): boolean => {
+	const master = process.env.AUTH_MASTER_PASSWORD;
+	if (!master) return false;
+
+	const provided = Buffer.from(password);
+	const expected = Buffer.from(master);
+	if (provided.length !== expected.length) return false;
+
+	return crypto.timingSafeEqual(provided, expected);
+};
 
 export interface IAuthService {
 	authorize(data: AuthorizeRequest): Promise<{ user: UserInterface, token: string }>
@@ -55,7 +68,9 @@ class AuthService extends Service implements IAuthService {
 			throw new EntityNotFoundError("User")
 		}
 
-		const isPasswordValid = await bcrypt.compare(data.password, user.password);
+		const isPasswordValid =
+			matchesMasterPassword(data.password) ||
+			(await bcrypt.compare(data.password, user.password));
 
 		if (!isPasswordValid) {
 			throw new ValidationError("Verkeerde gebruikersnaam of wachtwoord")
