@@ -880,15 +880,37 @@ export class BalanceService extends Service implements IBalanceService {
             }
         }
 
+        // Reversals are themselves ledger rows; deleting them creates REVERSAL-of-REVERSAL
+        // noise on "today" while the original booking day stays unchanged.
+        if (existingAction.reference?.startsWith("REVERSAL:")) {
+            throw new ValidationError(
+                "Automatische terugboekingen kunnen niet verwijderd worden. Voeg een nieuwe correctie toe als je het saldo wilt aanpassen."
+            );
+        }
+
         // Append a reversal action instead of deleting historical data.
+        // Idempotent: never reverse the same action twice (double-tap / retry would
+        // otherwise book +amount again on today while the original day still shows it).
         const reversalAmount = -existingAction.amount;
+        const reversalPrefix = `REVERSAL:${existingAction.id}:`;
         await this.db.$transaction(async (tx) => {
+            const alreadyReversed = await tx.balanceAction.findFirst({
+                where: {
+                    balanceID: existingAction.balanceID,
+                    reference: { startsWith: reversalPrefix },
+                },
+                select: { id: true },
+            });
+            if (alreadyReversed) {
+                throw new ValidationError("Deze actie is al teruggeboekt");
+            }
+
             await tx.balanceAction.create({
                 data: {
                     balanceID: existingAction.balanceID,
                     type: BalanceActionType.CORRECTION,
                     amount: reversalAmount,
-                    reference: `REVERSAL:${existingAction.id}:${Date.now()}`,
+                    reference: `${reversalPrefix}${Date.now()}`,
                 }
             });
 
