@@ -15,6 +15,8 @@ export interface IBalanceController {
     getFrozenBalance(req: Request, res: Response): Promise<void>;
     getBalanceDayTotals(req: Request, res: Response): Promise<void>;
     getDayOverview(req: Request, res: Response): Promise<void>;
+    getTeamOverview(req: Request, res: Response): Promise<void>;
+    getManagerProvisionBreakdown(req: Request, res: Response): Promise<void>;
     processPayout(req: Request, res: Response): Promise<void>;
     processCorrection(req: Request, res: Response): Promise<void>;
     addBalanceAction(req: Request, res: Response): Promise<void>;
@@ -182,6 +184,66 @@ export class BalanceController extends Controller implements IBalanceController 
 
             const overview = await this.balanceService.getDayOverview(dateParam);
             res.status(200).json(formatSuccessResponse('DayOverview', overview));
+        } catch (error) {
+            this.handleError(error, req, res);
+        }
+    };
+
+    public getTeamOverview = async (req: Request, res: Response): Promise<void> => {
+        try {
+            const dateParam = req.query.date as string | undefined;
+
+            if (!dateParam || !/^\d{4}-\d{2}-\d{2}$/.test(dateParam)) {
+                throw new ValidationError("Query parameter date is required (YYYY-MM-DD)");
+            }
+
+            const requestUser = Context.get("user");
+            if (requestUser.role !== Role.ADMIN && requestUser.role !== Role.MANAGER) {
+                throw new ValidationError("Only admins and managers can view the team balance overview");
+            }
+
+            let managerID = requestUser.id;
+            if (requestUser.role === Role.ADMIN) {
+                const managerIDParam = req.query.managerID
+                    ? parseInt(req.query.managerID as string, 10)
+                    : NaN;
+                if (!Number.isFinite(managerIDParam)) {
+                    throw new ValidationError("Query parameter managerID is required for admins");
+                }
+                managerID = managerIDParam;
+            } else if (req.query.managerID) {
+                const requested = parseInt(req.query.managerID as string, 10);
+                if (requested !== requestUser.id) {
+                    throw new ValidationError("Managers can only view their own team overview");
+                }
+            }
+
+            const overview = await this.balanceService.getTeamOverview(dateParam, managerID);
+            res.status(200).json(formatSuccessResponse('TeamOverview', overview));
+        } catch (error) {
+            this.handleError(error, req, res);
+        }
+    };
+
+    public getManagerProvisionBreakdown = async (req: Request, res: Response): Promise<void> => {
+        try {
+            const userID = parseInt(req.params.userID, 10);
+            const dateParam = req.query.date as string | undefined;
+
+            if (!dateParam || !/^\d{4}-\d{2}-\d{2}$/.test(dateParam)) {
+                throw new ValidationError("Query parameter date is required (YYYY-MM-DD)");
+            }
+
+            const requestUser = Context.get("user");
+            if (requestUser.role === Role.RUNNER) {
+                throw new ValidationError("Runners cannot view manager provision breakdown");
+            }
+            if (requestUser.role === Role.MANAGER && requestUser.id !== userID) {
+                throw new ValidationError("Managers can only view their own provision breakdown");
+            }
+
+            const breakdown = await this.balanceService.getManagerProvisionBreakdown(userID, dateParam);
+            res.status(200).json(formatSuccessResponse('ProvisionBreakdown', breakdown));
         } catch (error) {
             this.handleError(error, req, res);
         }

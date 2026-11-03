@@ -349,11 +349,15 @@ basePrisma.$use(async (params: Prisma.MiddlewareParams, next: (params: Prisma.Mi
 
                 if (!raffle) continue;
 
-                // Only award tickets from the raffle's Amsterdam business day.
+                // Only award tickets from the raffle's Amsterdam business day (to next 03:00).
                 // Without this filter, historical tickets with the same code get paid out.
-                const raffleDay = DateTime.fromJSDate(raffle.created).setZone('Europe/Amsterdam');
-                const dayStartUtc = raffleDay.startOf('day').toUTC().toJSDate();
-                const dayEndUtc = raffleDay.endOf('day').toUTC().toJSDate();
+                const raffleDay = DateTime.fromJSDate(raffle.created).setZone('Europe/Amsterdam').startOf('day');
+                const dayStartUtc = raffleDay.toUTC().toJSDate();
+                const dayEndUtc = raffleDay
+                    .plus({ days: 1 })
+                    .set({ hour: 3, minute: 0, second: 0, millisecond: 0 })
+                    .toUTC()
+                    .toJSDate();
 
                 // Build winning codes with order (1-based index)
                 const winningCodesWithOrder: Array<{ code: string; order: number }> = [];
@@ -376,7 +380,7 @@ basePrisma.$use(async (params: Prisma.MiddlewareParams, next: (params: Prisma.Mi
                             raffleID: null,
                             ticketID: { not: null },
                             ticket: {
-                                created: { gte: dayStartUtc, lte: dayEndUtc },
+                                created: { gte: dayStartUtc, lt: dayEndUtc },
                                 games: { some: { gameID: raffle.gameID } },
                             },
                         },

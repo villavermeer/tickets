@@ -18,7 +18,7 @@ export class ManagerService extends Service implements IManagerService {
                 role: Role.MANAGER
             },
             orderBy: {
-                created: 'desc'
+                name: 'asc'
             }
         }); 
         return users.map(user => UserMapper.format(user));

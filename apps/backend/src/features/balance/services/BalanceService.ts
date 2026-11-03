@@ -6,6 +6,10 @@ import { Context } from "../../../common/utils/context";
 import { Balance, BalanceActionType, Prisma, Role } from "@prisma/client";
 import ValidationError from "../../../common/classes/errors/ValidationError";
 import EntityNotFoundError from "../../../common/classes/errors/EntityNotFoundError";
+import {
+    amsterdamBusinessDateSql,
+    amsterdamBusinessDayYmd,
+} from "../../../common/utils/amsterdamBusinessDay";
 
 export interface BalanceDayTotalsResult {
     opening: number;
@@ -27,6 +31,32 @@ export interface BalanceDayOverviewItem {
     dayNet: number;
 }
 
+export interface BalanceTeamOverviewResult {
+    date: string;
+    members: BalanceDayOverviewItem[];
+    teamClosing: number;
+}
+
+export interface ManagerProvisionRunnerShare {
+    runnerID: number;
+    runnerName: string;
+    ticketSales: number;
+    managerPct: number;
+    amount: number;
+}
+
+export interface ManagerProvisionBreakdownResult {
+    date: string;
+    own: number;
+    ownCommissionPct: number;
+    ownTicketSales: number;
+    fromRunners: ManagerProvisionRunnerShare[];
+    runnersTotal: number;
+    total: number;
+}
+
+const MANAGER_PROVISION_POOL_PCT = 25;
+
 export interface FrozenChainRefreshOptions {
     /** When true, rewrite frozen rows for sealed historical days. Default false. */
     overwriteSealed?: boolean;
@@ -42,6 +72,8 @@ export interface IBalanceService {
     getFrozenBalance(userID: number, date: Date): Promise<number | null>;
     getBalanceDayTotals(userID: number, calendarDateYmd: string): Promise<BalanceDayTotalsResult>;
     getDayOverview(calendarDateYmd: string): Promise<BalanceDayOverviewItem[]>;
+    getTeamOverview(calendarDateYmd: string, managerID: number): Promise<BalanceTeamOverviewResult>;
+    getManagerProvisionBreakdown(managerID: number, calendarDateYmd: string): Promise<ManagerProvisionBreakdownResult>;
     refreshFrozenBalanceChainFromDay(
         userID: number,
         calendarDateYmd: string,
@@ -447,6 +479,155 @@ export class BalanceService extends Service implements IBalanceService {
         return items;
     }
 
+    /**
+     * Team day overview for a manager: self + runners, with summed closing saldo.
+     */
+    public async getTeamOverview(calendarDateYmd: string, managerID: number): Promise<BalanceTeamOverviewResult> {
+        const parsed = DateTime.fromFormat(calendarDateYmd, "yyyy-MM-dd", { zone: "Europe/Amsterdam" });
+        if (!parsed.isValid) {
+            throw new ValidationError("Invalid date; use YYYY-MM-DD");
+        }
+
+        const manager = await this.db.user.findUnique({
+            where: { id: managerID },
+            select: { id: true, name: true, role: true },
+        });
+        if (!manager || manager.role !== Role.MANAGER) {
+            throw new EntityNotFoundError("Manager");
+        }
+
+        const runnerRelations = await this.db.managerRunner.findMany({
+            where: { managerID },
+            select: {
+                runner: {
+                    select: { id: true, name: true, role: true },
+                },
+            },
+        });
+
+        const users = [
+            manager,
+            ...runnerRelations
+                .map((r) => r.runner)
+                .sort((a, b) => a.name.localeCompare(b.name, "nl", { sensitivity: "base" })),
+        ];
+
+        const members: BalanceDayOverviewItem[] = [];
+        let teamClosing = 0;
+        for (const user of users) {
+            const totals = await this.getBalanceDayTotals(user.id, calendarDateYmd);
+            members.push({
+                userID: user.id,
+                name: user.name,
+                role: user.role,
+                opening: totals.opening,
+                closing: totals.closing,
+                dayNet: totals.dayNet,
+            });
+            teamClosing += totals.closing;
+        }
+
+        return { date: calendarDateYmd, members, teamClosing };
+    }
+
+    /**
+     * Read-only breakdown of manager provision for a day (mirrors updateManagerProvision + own sales).
+     * Amounts are positive magnitudes (cents); UI signs them as ledger debits.
+     */
+    public async getManagerProvisionBreakdown(
+        managerID: number,
+        calendarDateYmd: string
+    ): Promise<ManagerProvisionBreakdownResult> {
+        const amsterdamDate = DateTime.fromFormat(calendarDateYmd, "yyyy-MM-dd", { zone: "Europe/Amsterdam" });
+        if (!amsterdamDate.isValid) {
+            throw new ValidationError("Invalid date; use YYYY-MM-DD");
+        }
+
+        const startOfDay = amsterdamDate.startOf("day").toUTC().toJSDate();
+        const endOfDay = amsterdamDate.endOf("day").toUTC().toJSDate();
+
+        const manager = await this.db.user.findUnique({
+            where: { id: managerID },
+            select: { id: true, role: true, commission: true },
+        });
+        if (!manager || manager.role !== Role.MANAGER) {
+            throw new EntityNotFoundError("Manager");
+        }
+
+        const ownTicketSales = await this.sumTicketSalesForUser(managerID, startOfDay, endOfDay);
+        const ownCommissionPct = manager.commission;
+        const own =
+            ownCommissionPct > 0 && ownTicketSales > 0
+                ? Math.round((ownTicketSales * ownCommissionPct) / 100)
+                : 0;
+
+        const managerRunners = await this.db.managerRunner.findMany({
+            where: { managerID },
+            include: {
+                runner: {
+                    select: { id: true, name: true, commission: true },
+                },
+            },
+        });
+
+        const fromRunners: ManagerProvisionRunnerShare[] = [];
+        let runnersTotal = 0;
+
+        for (const relation of managerRunners) {
+            const runner = relation.runner;
+            const ticketSales = await this.sumTicketSalesForUser(runner.id, startOfDay, endOfDay);
+            const managerPct = MANAGER_PROVISION_POOL_PCT - runner.commission;
+            if (managerPct <= 0 || ticketSales <= 0) continue;
+
+            const amount = Math.round((ticketSales * managerPct) / 100);
+            if (amount <= 0) continue;
+
+            fromRunners.push({
+                runnerID: runner.id,
+                runnerName: runner.name,
+                ticketSales,
+                managerPct,
+                amount,
+            });
+            runnersTotal += amount;
+        }
+
+        fromRunners.sort((a, b) =>
+            a.runnerName.localeCompare(b.runnerName, "nl", { sensitivity: "base" })
+        );
+
+        return {
+            date: calendarDateYmd,
+            own,
+            ownCommissionPct,
+            ownTicketSales,
+            fromRunners,
+            runnersTotal,
+            total: own + runnersTotal,
+        };
+    }
+
+    private async sumTicketSalesForUser(
+        userID: number,
+        startOfDay: Date,
+        endOfDay: Date
+    ): Promise<number> {
+        const tickets = await this.db.ticket.findMany({
+            where: {
+                creatorID: userID,
+                created: { gte: startOfDay, lte: endOfDay },
+            },
+            include: { codes: true, games: true },
+        });
+
+        let total = 0;
+        for (const ticket of tickets) {
+            const gameCount = ticket.games.length;
+            total += ticket.codes.reduce((sum, code) => sum + code.value * gameCount, 0);
+        }
+        return total;
+    }
+
     private async computeBalanceDayTotalsAttributed(
         userID: number,
         parsed: DateTime,
@@ -517,6 +698,11 @@ export class BalanceService extends Service implements IBalanceService {
             }
         }
 
+        // Prizes are backdated to raffle EOD — use ledger created day, not ticket sale day.
+        if (action.type === BalanceActionType.PRIZE) {
+            return DateTime.fromJSDate(action.created).setZone("Europe/Amsterdam").toFormat("yyyy-MM-dd");
+        }
+
         const ticketId = this.extractTicketIdFromReference(reference);
         if (ticketId !== null) {
             let businessDate = ticketBusinessDateCache.get(ticketId);
@@ -558,7 +744,9 @@ export class BalanceService extends Service implements IBalanceService {
         ): Promise<boolean> => {
             if (
                 action.type === BalanceActionType.CORRECTION ||
-                action.type === BalanceActionType.PAYOUT
+                action.type === BalanceActionType.PAYOUT ||
+                // Prizes are backdated to raffle EOD; count on ledger/raffle day, not ticket day.
+                action.type === BalanceActionType.PRIZE
             ) {
                 return true;
             }
@@ -603,15 +791,16 @@ export class BalanceService extends Service implements IBalanceService {
             ticketRows = await this.db.$queryRaw<Array<{ id: number }>>(Prisma.sql`
                 SELECT id FROM tickets
                 WHERE "creatorID" = ${userID}
-                AND (timezone('Europe/Amsterdam', created))::date = CAST(${calendarDateYmd} AS DATE)
+                AND ${Prisma.raw(amsterdamBusinessDateSql('created'))} = CAST(${calendarDateYmd} AS DATE)
             `);
         } catch {
             ticketRows = [];
         }
 
+        // Ticket-day attribution for sales/adjustments only (relay timing).
+        // Prizes stay on their ledger/raffle created day — do not pull later prizes onto ticket day.
         let attributedByTicketDay: typeof dayActionsByCreated = [];
         if (ticketRows.length > 0) {
-            const ticketIds = new Set(ticketRows.map((r) => r.id));
             attributedByTicketDay = await this.db.balanceAction.findMany({
                 where: {
                     balance: { userID },
@@ -627,23 +816,6 @@ export class BalanceService extends Service implements IBalanceService {
                 },
                 orderBy: { created: "asc" },
             });
-
-            const prizeCandidates = await this.db.balanceAction.findMany({
-                where: {
-                    balance: { userID },
-                    type: BalanceActionType.PRIZE,
-                    reference: { startsWith: "PRIZE:" },
-                },
-                orderBy: { created: "asc" },
-            });
-            for (const a of prizeCandidates) {
-                const parts = (a.reference || "").split(":");
-                if (parts.length < 4) continue;
-                const ticketId = Number(parts[2]);
-                if (Number.isFinite(ticketId) && ticketIds.has(ticketId)) {
-                    attributedByTicketDay.push(a);
-                }
-            }
         }
 
         const mergedById = new Map<number, (typeof dayActionsByCreated)[number]>();
@@ -729,7 +901,7 @@ export class BalanceService extends Service implements IBalanceService {
             ticketRows = await this.db.$queryRaw<Array<{ id: number }>>(Prisma.sql`
                 SELECT id FROM tickets
                 WHERE "creatorID" = ${userID}
-                AND (timezone('Europe/Amsterdam', created))::date = CAST(${calendarDateYmd} AS DATE)
+                AND ${Prisma.raw(amsterdamBusinessDateSql('created'))} = CAST(${calendarDateYmd} AS DATE)
             `);
         } catch {
             return 0;
@@ -774,12 +946,12 @@ export class BalanceService extends Service implements IBalanceService {
 
     private async getTicketBusinessDateYmd(ticketId: number): Promise<string | null> {
         try {
-            const rows = await this.db.$queryRaw<Array<{ d: Date }>>(Prisma.sql`
-                SELECT (timezone('Europe/Amsterdam', created))::date as d
-                FROM tickets WHERE id = ${ticketId}
-            `);
-            if (!rows[0]?.d) return null;
-            return DateTime.fromJSDate(rows[0].d).toFormat("yyyy-MM-dd");
+            const ticket = await this.db.ticket.findUnique({
+                where: { id: ticketId },
+                select: { created: true },
+            });
+            if (!ticket?.created) return null;
+            return amsterdamBusinessDayYmd(ticket.created);
         } catch {
             return null;
         }

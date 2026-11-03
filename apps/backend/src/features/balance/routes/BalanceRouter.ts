@@ -33,6 +33,13 @@ export class BalanceRouter implements IBalanceRouter {
             HasRole(Role.ADMIN),
             balanceController.getDayOverview
         );
+
+        // Manager (or admin) team day overview: self + runners
+        this.router.get(
+            "/team-overview",
+            Authorized,
+            balanceController.getTeamOverview
+        );
         
         this.router.get(
             "/:userID",
@@ -66,6 +73,13 @@ export class BalanceRouter implements IBalanceRouter {
             "/:userID/day-totals",
             Authorized,
             balanceController.getBalanceDayTotals
+        );
+
+        // Manager provision breakdown (own + per-runner share)
+        this.router.get(
+            "/:userID/provision-breakdown",
+            Authorized,
+            balanceController.getManagerProvisionBreakdown
         );
         
         // Process payout (admins only)

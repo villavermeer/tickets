@@ -6,7 +6,8 @@
 		"test": "echo \"Error: no test specified\" && exit 1",
 		"build": "tsc",
 		"start": "node -r tsconfig-paths/register dist/index.js",
-		"dev": "npx kill-port 8080 && npx nodemon",
+		"dev": "npx kill-port 8082 8080 && npx nodemon",
+		"seed:local": "npx ts-node -r tsconfig-paths/register src/scripts/seed-local.ts",
 		"fix-sequences": "node scripts/fix-sequences.js"
 	},
 	"author": "",

@@ -55,7 +55,7 @@ export class TicketController extends Controller implements ITicketController {
                 throw new ValidationError('Error creating ticket');
             }
 
-            res.status(200).json(formatMutationResponse('Ticket created'));
+            res.status(200).json(formatMutationResponse('Ticket created', { id: ticket.id }));
         } catch (error: any) {
             this.handleError(error, req, res);
         }

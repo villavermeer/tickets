@@ -16,6 +16,12 @@ import { RaffleService } from "../../raffle/services/RaffleService";
 import { BalanceService } from "../../balance/services/BalanceService";
 import { isGameUnavailableForDate } from "../../game/utils/gameAvailability";
 import { isTicketSubmissionClosed, ticketSubmissionClosedMessage } from "../utils/submissionStatus";
+import {
+    BUSINESS_DAY_START_HOUR,
+    amsterdamBusinessDayUtcWindow,
+    amsterdamBusinessDayYmd,
+    toAmsterdamBusinessDay,
+} from "../../../common/utils/amsterdamBusinessDay";
 
 export interface ITicketService {
     all(start: string, end: string, managerID?: string, runnerID?: string): Promise<TicketInterface[]>;
@@ -204,12 +210,23 @@ export class TicketService extends Service implements ITicketService {
             );
         }
 
+        // Before 03:00 AMS, attribute ticket.created to previous business day end so
+        // day lists / saldo / raffles match the evening being closed (late cutoffs).
+        const createdOverride =
+            nowNL.hour < BUSINESS_DAY_START_HOUR
+                ? toAmsterdamBusinessDay(nowNL)
+                      .set({ hour: 23, minute: 59, second: 59, millisecond: 0 })
+                      .toUTC()
+                      .toJSDate()
+                : undefined;
+
         // Use a transaction to ensure data consistency
         return await this.db.$transaction(async (tx) => {
             const ticket = await tx.ticket.create({
                 data: {
                     name: data.name,
                     creatorID: data.runnerID,
+                    ...(createdOverride ? { created: createdOverride } : {}),
                     codes: {
                         create: data.codes.map((code) => ({
                             code: code.code,
@@ -247,13 +264,9 @@ export class TicketService extends Service implements ITicketService {
             throw new ValidationError('Ticket niet gevonden');
         }
 
-        // check if the ticket was created today (same day editing only) - use Amsterdam timezone
-        const nowAmsterdam = DateTime.now().setZone('Europe/Amsterdam');
-        const ticketCreatedAmsterdam = DateTime.fromJSDate(ticket.created).setZone('Europe/Amsterdam');
-
-        // Compare the dates in Amsterdam timezone (year-month-day)
-        const todayDateStr = nowAmsterdam.toFormat('yyyy-MM-dd');
-        const ticketDateStr = ticketCreatedAmsterdam.toFormat('yyyy-MM-dd');
+        // Same Amsterdam business day only (rolls at 03:00)
+        const todayDateStr = amsterdamBusinessDayYmd();
+        const ticketDateStr = amsterdamBusinessDayYmd(ticket.created);
 
         if (todayDateStr !== ticketDateStr) {
             throw new ValidationError('Tickets kunnen alleen worden bewerkt op dezelfde dag als ze zijn aangemaakt');
@@ -909,11 +922,12 @@ export class TicketService extends Service implements ITicketService {
                     drawTableHeader();
                 }
 
-                // Ensure "Vaste lijst" appears at the end
-                const ordered: RelayableTicketEntry[] = [
-                    ...entries.filter(e => e.code !== 'Vaste lijst'),
-                    ...entries.filter(e => e.code === 'Vaste lijst')
-                ];
+                // Sort by amount (final) descending within the group; "Vaste lijst" stays last
+                const regular = entries
+                    .filter(e => e.code !== 'Vaste lijst')
+                    .sort((a, b) => b.final - a.final || a.code.localeCompare(b.code, 'nl'));
+                const vaste = entries.filter(e => e.code === 'Vaste lijst');
+                const ordered: RelayableTicketEntry[] = [...regular, ...vaste];
 
                 const gamesString = this.formatGameCombination(gameCombination);
                 let stripe = false;
@@ -1152,17 +1166,11 @@ export class TicketService extends Service implements ITicketService {
             throw new ValidationError('Start- en einddatum zijn verplicht voor het exporteren van saldo gegevens.');
         }
 
+        // Single Amsterdam calendar day (startdatum); matches in-app saldo day view.
         const startDate = this.parseDateParameter(start, true);
-        const endDate = this.parseDateParameter(end, false);
-
-        // Use Amsterdam calendar days so export matches the in-app saldo day view.
-        let startDay = DateTime.fromJSDate(startDate).setZone('Europe/Amsterdam').startOf('day');
-        let endDay = DateTime.fromJSDate(endDate).setZone('Europe/Amsterdam').startOf('day');
-        if (endDay < startDay) {
-            const tmp = startDay;
-            startDay = endDay;
-            endDay = tmp;
-        }
+        const calendarDateYmd = DateTime.fromJSDate(startDate)
+            .setZone('Europe/Amsterdam')
+            .toFormat('yyyy-MM-dd');
 
         const balanceService = container.resolve(BalanceService);
 
@@ -1195,31 +1203,14 @@ export class TicketService extends Service implements ITicketService {
         const rows: BalanceRow[] = [];
 
         for (const user of users) {
-            let vorigSaldo = 0;
-            let inleg = 0;
-            let correctie = 0;
-            let uitbetaling = 0;
-            let prijs = 0;
-            let provisie = 0;
-            let eindSaldo = 0;
-            let firstDay = true;
-
-            for (let cursor = startDay; cursor <= endDay; cursor = cursor.plus({ days: 1 })) {
-                const ymd = cursor.toFormat('yyyy-MM-dd');
-                const totals = await balanceService.getBalanceDayTotals(user.id, ymd);
-
-                if (firstDay) {
-                    vorigSaldo = totals.opening;
-                    firstDay = false;
-                }
-
-                inleg += totals.ticketSale;
-                correctie += totals.correction;
-                uitbetaling += totals.payout;
-                prijs += totals.prize;
-                provisie += totals.provision;
-                eindSaldo = totals.closing;
-            }
+            const totals = await balanceService.getBalanceDayTotals(user.id, calendarDateYmd);
+            const vorigSaldo = totals.opening;
+            const inleg = totals.ticketSale;
+            const correctie = totals.correction;
+            const uitbetaling = totals.payout;
+            const prijs = totals.prize;
+            const provisie = totals.provision;
+            const eindSaldo = totals.closing;
 
             // Keep users with any opening/activity so standen exports stay complete.
             if (
@@ -1252,25 +1243,46 @@ export class TicketService extends Service implements ITicketService {
         const workbook = new ExcelJS.Workbook();
         const worksheet = workbook.addWorksheet('Saldo export');
 
-        const currencyFormat = '€ #,##0.00';
+        // Numeric format only (euro in headers) so Dutch Excel can SUM the column.
+        const currencyFormat = '#,##0.00';
+        const currencyKeys = [
+            'vorigSaldo',
+            'inleg',
+            'correctie',
+            'uitbetaling',
+            'prijs',
+            'provisie',
+            'eindSaldo',
+        ] as const;
+
+        const applyCurrencyCells = (row: ExcelJS.Row) => {
+            for (const key of currencyKeys) {
+                const cell = row.getCell(key);
+                const numeric = Number(cell.value);
+                if (Number.isFinite(numeric)) {
+                    cell.value = numeric;
+                    cell.numFmt = currencyFormat;
+                }
+            }
+        };
 
         worksheet.columns = [
             { header: 'Loper / Manager', key: 'name', width: 30 },
             { header: 'Rol', key: 'role', width: 14 },
-            { header: 'Vorig saldo (€)', key: 'vorigSaldo', width: 18, style: { numFmt: currencyFormat } },
-            { header: 'Inleg (€)', key: 'inleg', width: 16, style: { numFmt: currencyFormat } },
-            { header: 'Correctie (€)', key: 'correctie', width: 16, style: { numFmt: currencyFormat } },
-            { header: 'Uitbetaling (€)', key: 'uitbetaling', width: 18, style: { numFmt: currencyFormat } },
-            { header: 'Prijzen (€)', key: 'prijs', width: 16, style: { numFmt: currencyFormat } },
-            { header: 'Provisie (€)', key: 'provisie', width: 16, style: { numFmt: currencyFormat } },
-            { header: 'Eind saldo (€)', key: 'eindSaldo', width: 18, style: { numFmt: currencyFormat } },
+            { header: 'Vorig saldo (€)', key: 'vorigSaldo', width: 18 },
+            { header: 'Inleg (€)', key: 'inleg', width: 16 },
+            { header: 'Correctie (€)', key: 'correctie', width: 16 },
+            { header: 'Uitbetaling (€)', key: 'uitbetaling', width: 18 },
+            { header: 'Prijzen (€)', key: 'prijs', width: 16 },
+            { header: 'Provisie (€)', key: 'provisie', width: 16 },
+            { header: 'Eind saldo (€)', key: 'eindSaldo', width: 18 },
         ];
 
         if (!rows.length) {
             worksheet.addRow({ name: 'Geen saldo acties gevonden voor de opgegeven periode.' });
         } else {
             rows.forEach((row) => {
-                worksheet.addRow({
+                const excelRow = worksheet.addRow({
                     name: row.name,
                     role: row.role === Role.MANAGER ? 'Manager' : 'Loper',
                     // Same signed cents as the in-app saldo day view
@@ -1282,10 +1294,11 @@ export class TicketService extends Service implements ITicketService {
                     provisie: row.provisie / 100,
                     eindSaldo: row.eindSaldo / 100,
                 });
+                applyCurrencyCells(excelRow);
             });
 
             worksheet.addRow({});
-            worksheet.addRow({
+            const totalRow = worksheet.addRow({
                 name: 'Totaal',
                 role: '',
                 vorigSaldo: rows.reduce((sum, row) => sum + row.vorigSaldo, 0) / 100,
@@ -1296,6 +1309,7 @@ export class TicketService extends Service implements ITicketService {
                 provisie: rows.reduce((sum, row) => sum + row.provisie, 0) / 100,
                 eindSaldo: rows.reduce((sum, row) => sum + row.eindSaldo, 0) / 100,
             });
+            applyCurrencyCells(totalRow);
         }
 
         return workbook.xlsx.writeBuffer();
@@ -1538,13 +1552,9 @@ export class TicketService extends Service implements ITicketService {
             throw new ValidationError('You are not allowed to delete this ticket');
         }
 
-        // check if the ticket was created today (same day editing only) - use Amsterdam timezone
-        const nowAmsterdam = DateTime.now().setZone('Europe/Amsterdam');
-        const ticketCreatedAmsterdam = DateTime.fromJSDate(ticket.created).setZone('Europe/Amsterdam');
-
-        // Compare the dates in Amsterdam timezone (year-month-day)
-        const todayDateStr = nowAmsterdam.toFormat('yyyy-MM-dd');
-        const ticketDateStr = ticketCreatedAmsterdam.toFormat('yyyy-MM-dd');
+        // Same Amsterdam business day only (rolls at 03:00)
+        const todayDateStr = amsterdamBusinessDayYmd();
+        const ticketDateStr = amsterdamBusinessDayYmd(ticket.created);
 
         if (todayDateStr !== ticketDateStr) {
             throw new ValidationError('Tickets kunnen alleen worden verwijderd op dezelfde dag als ze zijn aangemaakt');
@@ -1705,15 +1715,20 @@ export class TicketService extends Service implements ITicketService {
         }
 
         // Emit one chunk per game-list with multiple code rows for non-Super4 games
-        const combinedChunks: ChunkedRelayableTicket[] = Array.from(groupsByGames.values()).map(g => ({
-            gameCombination: g.gameList,
-            codes: g.entries.map(e => e.code),
-            totalValue: g.entries.reduce((s, x) => s + x.value, 0),
-            ticketCount: g.entries.length,
-            deduction: g.entries.reduce((s, x) => s + x.deduction, 0),
-            finalValue: g.entries.reduce((s, x) => s + x.final, 0),
-            entries: g.entries
-        }));
+        const combinedChunks: ChunkedRelayableTicket[] = Array.from(groupsByGames.values()).map(g => {
+            const entries = [...g.entries].sort(
+                (a, b) => b.final - a.final || a.code.localeCompare(b.code, 'nl')
+            );
+            return {
+                gameCombination: g.gameList,
+                codes: entries.map(e => e.code),
+                totalValue: entries.reduce((s, x) => s + x.value, 0),
+                ticketCount: entries.length,
+                deduction: entries.reduce((s, x) => s + x.deduction, 0),
+                finalValue: entries.reduce((s, x) => s + x.final, 0),
+                entries,
+            };
+        });
 
         // Combine non-Super4 chunks and Super4 chunks, keeping Super4 separate
         const allChunks = [...combinedChunks, ...super4Results];
@@ -1948,6 +1963,10 @@ export class TicketService extends Service implements ITicketService {
                 continue;
             }
 
+            entriesDetailed.sort(
+                (a, b) => b.final - a.final || a.code.localeCompare(b.code, 'nl')
+            );
+
             // Calculate totals
             const totalValue = entriesDetailed.reduce((s, x) => s + x.value, 0);
             const deduction = entriesDetailed.reduce((s, x) => s + x.deduction, 0);
@@ -2086,12 +2105,13 @@ export class TicketService extends Service implements ITicketService {
                 return;
             }
 
-            // Calculate per-code deductions and final values
+            // Calculate per-code deductions and final values; sort by amount desc within group
             const entriesDetailed = filteredEntries
                 .map(e => {
                     const { deduction, finalValue } = this.calculateDeduction(e.codeLength, e.value, group.gameIds);
                     return { code: e.code, codeLength: e.codeLength, value: e.value, deduction, final: finalValue };
-                });
+                })
+                .sort((a, b) => b.final - a.final || a.code.localeCompare(b.code, 'nl'));
 
             // Aggregate totals from per-code results
             const totalGroupValue = entriesDetailed.reduce((sum, e) => sum + e.value, 0);
@@ -2196,20 +2216,24 @@ export class TicketService extends Service implements ITicketService {
     }
 
     private getCutOffForGame(gameName: string, now: DateTime): DateTime {
-        const isSummerTime = now.isInDST;
-        const isSunday = now.weekday === 7;
+        // Before 03:00 use previous calendar day's schedule (Sat late close → Sun 02:00).
+        const scheduleDay =
+            now.hour < BUSINESS_DAY_START_HOUR ? now.minus({ days: 1 }) : now;
+        const isSummerTime = scheduleDay.isInDST;
+        const isSunday = scheduleDay.weekday === 7;
         const isNoonGame =
             gameName === "Philipsburg noon" || gameName === "Smart noon";
+        const lateNightCloseGames = new Set(["WNK", "WNK napa", "Diario", "Super 4"]);
 
         const isWNKEarlyClose =
             (gameName === "WNK" || gameName === "WNK napa") &&
-            now.hasSame(DateTime.fromISO("2026-02-17", { zone: "Europe/Amsterdam" }), "day");
+            scheduleDay.hasSame(DateTime.fromISO("2026-02-17", { zone: "Europe/Amsterdam" }), "day");
         if (isWNKEarlyClose) {
-            return now.set({ hour: 21, minute: 0, second: 0, millisecond: 0 });
+            return scheduleDay.set({ hour: 21, minute: 0, second: 0, millisecond: 0 });
         }
 
         if (isNoonGame) {
-            return now.set({
+            return scheduleDay.set({
                 hour: isSummerTime ? 17 : 16,
                 minute: 0,
                 second: 0,
@@ -2217,8 +2241,9 @@ export class TicketService extends Service implements ITicketService {
             });
         }
 
+        // Sunday: all evening games close at 19:00 summer / 18:00 winter
         if (isSunday) {
-            return now.set({
+            return scheduleDay.set({
                 hour: isSummerTime ? 19 : 18,
                 minute: 0,
                 second: 0,
@@ -2226,16 +2251,26 @@ export class TicketService extends Service implements ITicketService {
             });
         }
 
-        if (isSummerTime) {
-            return now.plus({ days: 1 }).startOf("day");
+        // Mon–Sat late-night close (next calendar morning after schedule day)
+        if (lateNightCloseGames.has(gameName)) {
+            return scheduleDay.plus({ days: 1 }).set({
+                hour: isSummerTime ? 2 : 1,
+                minute: 0,
+                second: 0,
+                millisecond: 0,
+            });
         }
 
-        return now.set({ hour: 23, minute: 0, second: 0, millisecond: 0 });
+        // Mon–Sat midnight close (Flamingo, Santo, Philipsburg/Smart evening, …)
+        if (isSummerTime) {
+            return scheduleDay.plus({ days: 1 }).startOf("day");
+        }
+
+        return scheduleDay.set({ hour: 23, minute: 0, second: 0, millisecond: 0 });
     }
 
     private async checkDailyLimits(codes: any[], games: number[], runnerID: number, nowNL: DateTime): Promise<void> {
-        const startOfDay = nowNL.startOf('day').toJSDate();
-        const endOfDay = nowNL.endOf('day').toJSDate();
+        const { startUtc: startOfDay, endUtc: endOfDay } = amsterdamBusinessDayUtcWindow(nowNL);
 
         const uniqueGameIds = Array.from(new Set(games));
         const gameNameRecords = uniqueGameIds.length
@@ -2286,7 +2321,7 @@ export class TicketService extends Service implements ITicketService {
                 }
 
                 const ticketWhereForGame: Prisma.TicketWhereInput = {
-                    created: { gte: startOfDay, lte: endOfDay },
+                    created: { gte: startOfDay, lt: endOfDay },
                     games: { some: { gameID } }
                 };
 

@@ -161,14 +161,21 @@ async function main() {
     `;
 
     for (const p of prizes) {
+        const prizeDay = p.prize_day.slice(0, 10);
         const ticketDay = p.ticket_day.slice(0, 10);
-        const onTicketDay = await service.getBalanceDayTotals(p.user_id, ticketDay);
-        if (onTicketDay.prize !== 0) {
-            pass(`prize ${p.name}: prize on ticket day ${ticketDay}`);
+        const onPrizeDay = await service.getBalanceDayTotals(p.user_id, prizeDay);
+        if (onPrizeDay.prize !== 0) {
+            pass(`prize ${p.name}: prize on raffle/ledger day ${prizeDay}`);
         } else {
-            fail(`prize ${p.name}: prize on ticket day ${ticketDay}`, "prize is 0");
+            fail(`prize ${p.name}: prize on raffle/ledger day ${prizeDay}`, "prize is 0");
         }
-        checkTotals(`prize ${p.name} ${ticketDay}`, ticketDay, onTicketDay);
+        checkTotals(`prize ${p.name} ${prizeDay}`, prizeDay, onPrizeDay);
+
+        if (ticketDay !== prizeDay) {
+            const onTicketDay = await service.getBalanceDayTotals(p.user_id, ticketDay);
+            // Cross-day: prize must not be pulled onto the ticket sale day.
+            checkTotals(`prize ${p.name} ticket day ${ticketDay}`, ticketDay, onTicketDay);
+        }
     }
 
     // ── 5. Provision by reference (created later) ───────────────────────────

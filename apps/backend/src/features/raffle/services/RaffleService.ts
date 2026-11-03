@@ -6,7 +6,7 @@ import { RaffleInterface } from '@tickets/types/dist/raffle';
 import EntityNotFoundError from '../../../common/classes/errors/EntityNotFoundError';
 import { RaffleMapper } from '../mappers/RaffleMapper';
 import { CodeMapper } from '../../code/mappers/CodeMapper';
-import { Game, Ticket, BalanceActionType } from '@prisma/client';
+import { Game, Ticket, BalanceActionType, Role, Prisma } from '@prisma/client';
 import { GameInterface, TicketInterface } from '@tickets/types';
 import { DateTime } from 'luxon';
 import { createPrizeReference } from '../utils/prizeReference';
@@ -14,8 +14,11 @@ import {
     playedCodeMatchesWinningSuffixes,
     winningCodeMatchesPlayedCode,
 } from '../utils/prizeMatching';
-import { Role } from '@prisma/client';
 import { BalanceService } from '../../balance/services/BalanceService';
+import {
+    amsterdamBusinessDateSql,
+    amsterdamBusinessDayYmd,
+} from '../../../common/utils/amsterdamBusinessDay';
 
 export interface IRaffleService {
     save(data: Array<CreateRaffleRequest>): Promise<void>
@@ -157,9 +160,7 @@ export class RaffleService extends Service implements IRaffleService {
             return 0;
         }
 
-        const ticketBusinessDay = DateTime.fromJSDate(ticket.created)
-            .setZone("Europe/Amsterdam")
-            .toFormat("yyyy-MM-dd");
+        const ticketBusinessDay = amsterdamBusinessDayYmd(ticket.created);
 
         const winningCodes = await this.buildWinningCodesForGameOnCalendarDay(
             raffle.gameID,
@@ -979,11 +980,11 @@ export class RaffleService extends Service implements IRaffleService {
         const endOfDay = amsterdamDate.endOf('day').toUTC().toJSDate();
         const calendarDateYmd = amsterdamDate.toFormat('yyyy-MM-dd');
 
-        // Load PRIZE rows for tickets whose Amsterdam business day is this date
-        const ticketRows = await this.db.$queryRaw<Array<{ id: number }>>`
+        // Load PRIZE rows for tickets whose Amsterdam business day is this date (03:00 rollover)
+        const ticketRows = await this.db.$queryRaw<Array<{ id: number }>>(Prisma.sql`
             SELECT id FROM tickets
-            WHERE (timezone('Europe/Amsterdam', created))::date = CAST(${calendarDateYmd} AS DATE)
-        `;
+            WHERE ${Prisma.raw(amsterdamBusinessDateSql('created'))} = CAST(${calendarDateYmd} AS DATE)
+        `);
         const ticketIds = new Set(ticketRows.map((r) => r.id));
 
         if (ticketIds.size === 0) {

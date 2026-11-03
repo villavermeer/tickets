@@ -10,7 +10,7 @@ require('dotenv').config()
 
 export const ROOTDIR = __dirname;
 
-const PORT = 8080;
+const PORT = Number(process.env.PORT) || 8080;
 
 let server: http.Server | undefined;
 

@@ -47,7 +47,8 @@ export class RunnerService extends Service implements IRunnerService {
                             managerID: requestingUser.id
                         }
                     }
-                }
+                },
+                orderBy: { name: 'asc' },
             }); 
             
             return users.map(user => UserMapper.format(user));
@@ -57,7 +58,8 @@ export class RunnerService extends Service implements IRunnerService {
             select: UserMapper.getSelectableFields(),
             where: {
                 role: Role.RUNNER
-            }
+            },
+            orderBy: { name: 'asc' },
         }); 
         
         return users.map(user => UserMapper.format(user));
@@ -74,6 +76,7 @@ export class RunnerService extends Service implements IRunnerService {
                 }   
             },
             select: UserMapper.getSelectableFields(),
+            orderBy: { name: 'asc' },
         });
         return users.map(user => UserMapper.format(user));
     }
