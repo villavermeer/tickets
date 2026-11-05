@@ -351,6 +351,8 @@ basePrisma.$use(async (params: Prisma.MiddlewareParams, next: (params: Prisma.Mi
 
                 // Only award tickets from the raffle's Amsterdam business day (to next 03:00).
                 // Without this filter, historical tickets with the same code get paid out.
+                // Keep dayEndUtc as the ticket query bound only — prize ledger stamps use raffle EOD
+                // so saldo "Prijzen" lands on the raffle calendar day, not next-day 03:00.
                 const raffleDay = DateTime.fromJSDate(raffle.created).setZone('Europe/Amsterdam').startOf('day');
                 const dayStartUtc = raffleDay.toUTC().toJSDate();
                 const dayEndUtc = raffleDay
@@ -358,6 +360,7 @@ basePrisma.$use(async (params: Prisma.MiddlewareParams, next: (params: Prisma.Mi
                     .set({ hour: 3, minute: 0, second: 0, millisecond: 0 })
                     .toUTC()
                     .toJSDate();
+                const raffleEndOfDayUtc = raffleDay.endOf('day').toUTC().toJSDate();
 
                 // Build winning codes with order (1-based index)
                 const winningCodesWithOrder: Array<{ code: string; order: number }> = [];
@@ -453,8 +456,8 @@ basePrisma.$use(async (params: Prisma.MiddlewareParams, next: (params: Prisma.Mi
                                 type: BalanceActionType.PRIZE,
                                 amount: -prizeAmount,
                                 reference,
-                                // Date to raffle EOD so the prize lands on the raffle business day
-                                created: dayEndUtc,
+                                // Date to raffle EOD so the prize lands on the raffle calendar day
+                                created: raffleEndOfDayUtc,
                             },
                         },
                     });
