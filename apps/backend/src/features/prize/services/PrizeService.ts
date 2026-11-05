@@ -114,8 +114,9 @@ export class PrizeService extends Service implements IPrizeService {
     /**
      * Returns prize results grouped by game for the provided calendar date.
      * Access scope is applied based on the current user role:
-     * - ADMIN: all users
-     * - MANAGER: self + runners under the manager, or a specific runner when provided
+     * - ADMIN: all users, or a specific user when scopeUserID is provided
+     * - MANAGER: without scopeUserID → self + runners (overview);
+     *   with scopeUserID → that user only (self or a managed runner)
      * - RUNNER: only self regardless of the provided scopeUserID
      */
     public async getPrizesByDate(date: Date, scopeUserID?: number, page: number = 1, pageSize: number = 50): Promise<{
@@ -142,19 +143,24 @@ export class PrizeService extends Service implements IPrizeService {
         if (currentUser.role === Role.RUNNER) {
             scopedUserIDs = [currentUser.id];
         } else if (currentUser.role === Role.MANAGER) {
-            if (scopeUserID && scopeUserID !== currentUser.id) {
-                const isUnderManager = await this.db.managerRunner.findFirst({
-                    where: { managerID: currentUser.id, runnerID: scopeUserID },
-                    select: { id: true }
-                });
-                if (!isUnderManager) {
-                    // If not managed, limit to manager self
+            if (scopeUserID) {
+                if (scopeUserID === currentUser.id) {
+                    // Drill-down on own managerTotals card: own tickets only, not team
                     scopedUserIDs = [currentUser.id];
                 } else {
-                    scopedUserIDs = [scopeUserID];
+                    const isUnderManager = await this.db.managerRunner.findFirst({
+                        where: { managerID: currentUser.id, runnerID: scopeUserID },
+                        select: { id: true }
+                    });
+                    if (!isUnderManager) {
+                        // If not managed, limit to manager self
+                        scopedUserIDs = [currentUser.id];
+                    } else {
+                        scopedUserIDs = [scopeUserID];
+                    }
                 }
             } else {
-                // Manager without specific runner -> self + all runners
+                // Overview without userID → self + all runners
                 const relations = await this.db.managerRunner.findMany({
                     where: { managerID: currentUser.id },
                     select: { runnerID: true }
